@@ -12,3 +12,6 @@ local.properties
 android-tools/
 app/build/
 *.apk
+gradle/wrapper/gradle-wrapper.jar
+log
+shortcuts*.txt
