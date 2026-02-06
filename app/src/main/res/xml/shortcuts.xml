@@ -1,0 +1,25 @@
+<shortcuts xmlns:android="http://schemas.android.com/apk/res/android">
+    <shortcut
+        android:shortcutId="settings"
+        android:enabled="true"
+        android:icon="@drawable/ic_shortcut_settings"
+        android:shortcutShortLabel="@string/settings_title"
+        android:shortcutLongLabel="@string/settings_title">
+        <intent
+            android:action="android.intent.action.VIEW"
+            android:targetPackage="com.trae.simplebrowser"
+            android:targetClass="com.trae.simplebrowser.SettingsActivity" />
+    </shortcut>
+
+    <shortcut
+        android:shortcutId="bookmarks"
+        android:enabled="true"
+        android:icon="@drawable/ic_shortcut_bookmark"
+        android:shortcutShortLabel="@string/bookmarks_title"
+        android:shortcutLongLabel="@string/bookmarks_title">
+        <intent
+            android:action="android.intent.action.VIEW"
+            android:targetPackage="com.trae.simplebrowser"
+            android:targetClass="com.trae.simplebrowser.BookmarksActivity" />
+    </shortcut>
+</shortcuts>

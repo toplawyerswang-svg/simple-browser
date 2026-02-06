@@ -1,0 +1,33 @@
+<resources>
+    <string name="app_name">极简浏览器</string>
+    <string name="hint_url">输入网址或搜索</string>
+    <string name="action_go">前往</string>
+    <string name="action_back">后退</string>
+    <string name="action_forward">前进</string>
+    <string name="action_refresh">刷新</string>
+    <string name="action_bookmark">书签</string>
+    <string name="action_more">更多</string>
+    <string name="menu_add_to_home">添加到主屏幕</string>
+    <string name="menu_open_bookmarks">打开书签</string>
+    <string name="menu_settings">设置</string>
+    <string name="menu_copy_link">复制链接</string>
+    <string name="menu_share">分享</string>
+    <string name="settings_title">设置</string>
+    <string name="setting_hide_controls">隐藏所有组件</string>
+    <string name="bookmarks_title">书签</string>
+    <string name="toast_shortcut_requested">已请求添加到主屏幕</string>
+    <string name="toast_copied">已复制</string>
+    <string name="toast_bookmarked">已加入书签</string>
+    <string name="toast_bookmark_removed">已移除书签</string>
+    <string name="dialog_edit_shortcut_name">编辑名称</string>
+    <string name="hint_shortcut_name">名称</string>
+    <string name="label_choose_shortcut_icon">选择图标</string>
+    <string name="shortcut_icon_site">网站图标</string>
+    <string name="shortcut_icon_default">默认图标</string>
+    <string name="shortcut_icon_letter">字母图标</string>
+    <string name="shortcut_icon_glyph">符号图标</string>
+    <string name="toast_unsupported_link">无法打开该链接</string>
+    <string name="toast_file_chooser_failed">无法选择文件</string>
+    <string name="label_choose_file">选择文件</string>
+    <string name="label_version">版本: %s</string>
+</resources>

@@ -1,0 +1,14 @@
+<resources>
+    <color name="purple_200">#BB86FC</color>
+    <color name="purple_500">#6200EE</color>
+    <color name="purple_700">#3700B3</color>
+    <color name="white">#FFFFFF</color>
+    
+    <!-- Glassmorphism Colors -->
+    <color name="glass_gradient_start">#667eea</color>
+    <color name="glass_gradient_end">#764ba2</color>
+    <color name="glass_surface">#40FFFFFF</color>
+    <color name="glass_surface_stroke">#50FFFFFF</color>
+    <color name="glass_text">#FFFFFF</color>
+    <color name="search_highlight">#FF4081</color>
+</resources>

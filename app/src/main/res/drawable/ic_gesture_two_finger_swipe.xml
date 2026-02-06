@@ -1,0 +1,19 @@
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="100dp"
+    android:height="100dp"
+    android:viewportWidth="100"
+    android:viewportHeight="100">
+    
+    <!-- Fingers (Filled Circles) -->
+    <path
+        android:fillColor="#FF757575"
+        android:pathData="M30,20 A10,10 0 1 1 30,40 A10,10 0 1 1 30,20 M70,20 A10,10 0 1 1 70,40 A10,10 0 1 1 70,20"/>
+        
+    <!-- Arrows (Stroke) -->
+    <path
+        android:strokeColor="#FF757575"
+        android:strokeWidth="4"
+        android:strokeLineCap="round"
+        android:strokeLineJoin="round"
+        android:pathData="M30,45 L30,75 M25,70 L30,75 L35,70 M70,45 L70,75 M65,70 L70,75 L75,70"/>
+</vector>
