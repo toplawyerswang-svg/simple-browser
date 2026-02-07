@@ -129,7 +129,6 @@ class MainActivity : AppCompatActivity() {
 
         setupWebView(binding.webView)
         setupControls()
-        ensureAppShortcuts()
 
         val initialUrl = intent?.dataString
         if (!initialUrl.isNullOrBlank()) {
@@ -956,29 +955,6 @@ class MainActivity : AppCompatActivity() {
 
         shortcutManager.requestPinShortcut(shortcut, null)
         Toast.makeText(this, getString(R.string.toast_shortcut_requested), Toast.LENGTH_SHORT).show()
-    }
-
-    private fun ensureAppShortcuts() {
-        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.N_MR1) return
-
-        runCatching {
-            val shortcutManager = getSystemService<ShortcutManager>() ?: return
-            val intent = Intent(this, SettingsActivity::class.java).apply {
-                action = Intent.ACTION_VIEW
-            }
-
-            val shortcut = ShortcutInfo.Builder(this, "settings")
-                .setShortLabel(getString(R.string.settings_title))
-                .setLongLabel(getString(R.string.settings_title))
-                .setIntent(intent)
-                .setIcon(IconCompat.createWithResource(this, R.mipmap.ic_launcher).toIcon(this))
-                .build()
-
-            shortcutManager.dynamicShortcuts = listOf(shortcut)
-            Log.i(logTag, "Dynamic shortcuts set: ${shortcutManager.dynamicShortcuts.size}")
-        }.onFailure { e ->
-            Log.e(logTag, "ensureAppShortcuts failed", e)
-        }
     }
 
     private enum class PinIconKind {
