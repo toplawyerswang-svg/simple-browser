@@ -14,7 +14,7 @@
          It likely continued. Let me check the full file or assume a WebView is needed.
          Since this is a "Browser", it MUST have a WebView.
          I'll add one. -->
-    <WebView
+    <org.mozilla.geckoview.GeckoView
         android:id="@+id/webView"
         android:layout_width="0dp"
         android:layout_height="0dp"
@@ -22,6 +22,18 @@
         app:layout_constraintEnd_toEndOf="parent"
         app:layout_constraintStart_toStartOf="parent"
         app:layout_constraintTop_toTopOf="parent" />
+
+    <ProgressBar
+        android:id="@+id/progressBar"
+        style="?android:attr/progressBarStyleHorizontal"
+        android:layout_width="0dp"
+        android:layout_height="4dp"
+        android:max="100"
+        android:progressTint="@color/purple_500"
+        android:visibility="gone"
+        app:layout_constraintBottom_toTopOf="@+id/bottomContainer"
+        app:layout_constraintEnd_toEndOf="parent"
+        app:layout_constraintStart_toStartOf="parent" />
 
     <!-- Bottom Glass Container -->
     <androidx.constraintlayout.widget.ConstraintLayout
