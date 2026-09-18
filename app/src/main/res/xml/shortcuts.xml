@@ -1,5 +1,17 @@
 <shortcuts xmlns:android="http://schemas.android.com/apk/res/android">
     <shortcut
+        android:shortcutId="scan"
+        android:enabled="true"
+        android:icon="@drawable/ic_shortcut_scan"
+        android:shortcutShortLabel="@string/shortcut_scan"
+        android:shortcutLongLabel="@string/shortcut_scan">
+        <intent
+            android:action="android.intent.action.VIEW"
+            android:targetPackage="com.trae.lightboat"
+            android:targetClass="com.trae.simplebrowser.ScanActivity" />
+    </shortcut>
+
+    <shortcut
         android:shortcutId="settings"
         android:enabled="true"
         android:icon="@drawable/ic_shortcut_settings"
@@ -7,7 +19,7 @@
         android:shortcutLongLabel="@string/settings_title">
         <intent
             android:action="android.intent.action.VIEW"
-            android:targetPackage="com.trae.simplebrowser"
+            android:targetPackage="com.trae.lightboat"
             android:targetClass="com.trae.simplebrowser.SettingsActivity" />
     </shortcut>
 
@@ -19,7 +31,7 @@
         android:shortcutLongLabel="@string/bookmarks_title">
         <intent
             android:action="android.intent.action.VIEW"
-            android:targetPackage="com.trae.simplebrowser"
+            android:targetPackage="com.trae.lightboat"
             android:targetClass="com.trae.simplebrowser.BookmarksActivity" />
     </shortcut>
 </shortcuts>

@@ -1,0 +1,127 @@
+# 轻舟浏览器内置广告域名精选表
+# 语义：命中域名及其全部子域的子资源请求一律拦截（主文档不受影响）
+# 只收录业界公认的广告/统计/追踪域名；正常站点主域绝不收录
+# 可在设置页"更新在线广告规则"拉取 anti-AD 全量表（数万条）获得更强覆盖
+
+# ---------- Google 广告与统计 ----------
+doubleclick.net
+googlesyndication.com
+googleadservices.com
+adservice.google.com
+google-analytics.com
+adsystem.com
+admob.com
+# ---------- 国际广告网络/交易 ----------
+adnxs.com
+adsrvr.org
+rubiconproject.com
+pubmatic.com
+openx.net
+casalemedia.com
+indexww.com
+smartadserver.com
+adform.net
+criteo.com
+criteo.net
+bidswitch.net
+sharethrough.com
+teads.tv
+yieldmo.com
+sonobi.com
+33across.com
+contextweb.com
+pulsepoint.com
+advertising.com
+amazon-adsystem.com
+moatads.com
+doubleverify.com
+adsafeprotected.com
+serving-sys.com
+flashtalking.com
+zedo.com
+adroll.com
+media.net
+taboola.com
+outbrain.com
+revcontent.com
+mgid.com
+propellerads.com
+popads.net
+popcash.net
+adcash.com
+exoclick.com
+juicyads.com
+hilltopads.net
+bidr.io
+yieldlab.net
+improvedigital.com
+spotxchange.com
+tremorhub.com
+adtech.de
+adtechus.com
+atdmt.com
+# ---------- 国际追踪/数据经纪 ----------
+scorecardresearch.com
+quantserve.com
+quantcount.com
+crwdcntrl.net
+exelator.com
+bluekai.com
+demdex.net
+omtrdc.net
+everesttech.net
+mathtag.com
+rlcdn.com
+agkn.com
+krxd.net
+liadm.com
+id5-sync.com
+hotjar.com
+ads-twitter.com
+# ---------- 移动广告平台 ----------
+applovin.com
+unityads.unity3d.com
+inmobi.com
+mopub.com
+startapp.com
+chartboost.com
+vungle.com
+ironsrc.com
+supersonic.com
+# ---------- 中国广告/统计/追踪 ----------
+cnzz.com
+umeng.com
+umeng.co
+51.la
+51yes.com
+mmstat.com
+tanx.com
+mediav.com
+allyes.com
+admaster.com
+admaster.com.cn
+hm.baidu.com
+pos.baidu.com
+cpro.baidu.com
+wrating.com
+ipinyou.com
+yoyi.com.cn
+chanet.com.cn
+linkstars.com
+miaozhen.com
+madhouse.cn
+domob.cn
+domob.org
+youmi.net
+adwo.com
+growingio.com
+sensorsdata.cn
+shuzilm.cn
+yigao.com
+vpon.cn
+dianru.com
+casee.cn
+adview.cn
+adsame.com
+# ---------- 说明 ----------
+# 无法高置信度确认的域名一律不收录；更全的覆盖请用"更新在线广告规则"拉取 anti-AD 全量表

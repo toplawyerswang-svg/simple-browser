@@ -4,11 +4,18 @@
     android:viewportWidth="108"
     android:viewportHeight="108">
     <path
-        android:fillColor="@color/purple_500"
-        android:fillType="evenOdd"
-        android:pathData="M54,18c-19.882,0 -36,16.118 -36,36s16.118,36 36,36 36,-16.118 36,-36 -16.118,-36 -36,-36zM54,24c16.568,0 30,13.432 30,30s-13.432,30 -30,30 -30,-13.432 -30,-30 13.432,-30 30,-30z" />
+        android:fillColor="@color/boat_teal"
+        android:pathData="M52,27 L52,58 L31,58 Z" />
     <path
-        android:fillColor="@color/purple_500"
-        android:fillType="evenOdd"
-        android:pathData="M54,36c-9.941,0 -18,8.059 -18,18s8.059,18 18,18 18,-8.059 18,-18 -8.059,-18 -18,-18zM54,42c6.627,0 12,5.373 12,12s-5.373,12 -12,12 -12,-5.373 -12,-12 5.373,-12 12,-12z" />
+        android:fillColor="@color/boat_teal_light"
+        android:pathData="M59,35 L59,58 L77,58 Z" />
+    <path
+        android:fillColor="@color/boat_teal_dark"
+        android:pathData="M29,62 L79,62 L69,72 L39,72 Z" />
+    <path
+        android:fillColor="#00000000"
+        android:strokeColor="@color/boat_teal"
+        android:strokeWidth="5"
+        android:strokeLineCap="round"
+        android:pathData="M29,82 Q38,75 47,82 T65,82 T83,82" />
 </vector>

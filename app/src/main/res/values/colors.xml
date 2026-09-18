@@ -3,6 +3,12 @@
     <color name="purple_500">#6200EE</color>
     <color name="purple_700">#3700B3</color>
     <color name="white">#FFFFFF</color>
+
+    <!-- LightBoat Icon Colors -->
+    <color name="boat_teal">#00897B</color>
+    <color name="boat_teal_dark">#00695C</color>
+    <color name="boat_teal_light">#26A69A</color>
+    <color name="boat_bg">#E0F2F1</color>
     
     <!-- Glassmorphism Colors -->
     <color name="glass_gradient_start">#667eea</color>
@@ -11,4 +17,10 @@
     <color name="glass_surface_stroke">#50FFFFFF</color>
     <color name="glass_text">#FFFFFF</color>
     <color name="search_highlight">#FF4081</color>
+
+    <!-- 多账号身份徽标（按身份序号取用） -->
+    <color name="identity_1">#3B82F6</color>
+    <color name="identity_2">#F59E0B</color>
+    <color name="identity_3">#10B981</color>
+    <color name="identity_4">#8B5CF6</color>
 </resources>

@@ -13,6 +13,23 @@ object AppPrefs {
     private const val PREFS_NAME = "lite_browser_prefs"
     private const val KEY_HIDE_CONTROLS = "hide_controls"
     private const val KEY_BOOKMARKS_JSON = "bookmarks_json"
+    private const val KEY_ASR_TOKEN = "asr_token"
+    private const val KEY_ASR_USER = "asr_user"
+    private const val KEY_IDENTITY_COUNT = "identity_count"
+
+    /** 已创建的身份数量（含身份1）；默认 1，即升级用户保持原单身份行为 */
+    fun getIdentityCount(context: Context): Int {
+        return context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+            .getInt(KEY_IDENTITY_COUNT, 1)
+            .coerceAtLeast(1)
+    }
+
+    fun setIdentityCount(context: Context, count: Int) {
+        context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+            .edit()
+            .putInt(KEY_IDENTITY_COUNT, count.coerceAtLeast(1))
+            .apply()
+    }
 
     fun getHideControls(context: Context): Boolean {
         return context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
@@ -23,6 +40,34 @@ object AppPrefs {
         context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
             .edit()
             .putBoolean(KEY_HIDE_CONTROLS, hide)
+            .apply()
+    }
+
+    fun getAsrToken(context: Context): String {
+        return context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+            .getString(KEY_ASR_TOKEN, "")
+            ?: ""
+    }
+
+    fun getAsrUser(context: Context): String {
+        return context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+            .getString(KEY_ASR_USER, "")
+            ?: ""
+    }
+
+    fun setAsrAuth(context: Context, token: String, user: String) {
+        context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+            .edit()
+            .putString(KEY_ASR_TOKEN, token)
+            .putString(KEY_ASR_USER, user)
+            .apply()
+    }
+
+    fun clearAsrAuth(context: Context) {
+        context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+            .edit()
+            .remove(KEY_ASR_TOKEN)
+            .remove(KEY_ASR_USER)
             .apply()
     }
 

@@ -1,11 +1,88 @@
 package com.trae.simplebrowser
 
+import android.app.DownloadManager
+import android.content.BroadcastReceiver
+import android.content.Context
+import android.content.Intent
+import android.content.IntentFilter
+import android.media.MediaPlayer
+import android.net.Uri
 import android.os.Bundle
+import android.os.Environment
+import android.provider.MediaStore
+import android.util.Log
+import android.view.Gravity
+import android.view.LayoutInflater
+import android.view.View
+import android.view.ViewGroup
+import android.widget.BaseAdapter
+import android.widget.Button
+import android.widget.CheckBox
+import android.widget.EditText
+import android.widget.LinearLayout
+import android.widget.ListView
+import android.widget.ProgressBar
+import android.widget.TextView
+import android.widget.Toast
+import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
+import androidx.core.content.ContextCompat
+import com.google.android.material.tabs.TabLayout
+import com.trae.simplebrowser.core.AdBlockEngine
+import com.trae.simplebrowser.core.DownloadKind
+import com.trae.simplebrowser.core.DownloadRecord
+import com.trae.simplebrowser.core.DownloadStatus
 import com.trae.simplebrowser.databinding.ActivitySettingsBinding
+import java.io.File
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 
+/**
+ * 设置页：双标签页（下载管理 | 音频识别）。
+ * 音频识别按用户令牌隔离，列表条目点击打开转写详情，「播放」按钮播放对应录音（语音消息式）。
+ */
 class SettingsActivity : AppCompatActivity() {
     private lateinit var binding: ActivitySettingsBinding
+    private val logTag = "Settings"
+
+    private val downloadStore by lazy { DownloadStoreFile(this) }
+
+    // ---------- 下载管理批量选择状态 ----------
+    private var selectionMode = false
+    private val selectedIds = LinkedHashSet<String>()
+
+    private val downloadUpdatedReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context, intent: Intent) {
+            if (intent.action == DownloadEvents.ACTION_UPDATED) {
+                renderDownloads()
+            }
+        }
+    }
+
+    // ---------- 音频识别管理状态 ----------
+    private data class TaskItem(
+        val id: String,
+        val name: String,
+        val status: String,
+        val stage: String,
+        val createdAt: Long,
+        val durationMs: Long,
+        val isVideo: Boolean,
+        val shareCount: Int
+    )
+
+    private val items = ArrayList<TaskItem>()
+    private lateinit var taskAdapter: BaseAdapter
+    private lateinit var asrAuthPanel: LinearLayout
+    private lateinit var asrContentPanel: LinearLayout
+    private lateinit var asrTokenInput: EditText
+    private lateinit var asrIdentityView: TextView
+    private lateinit var asrListView: ListView
+    private lateinit var asrEmptyView: TextView
+    private var asrLoaded = false
+    private var mediaPlayer: MediaPlayer? = null
+    private var playingTaskId: String? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -18,10 +95,819 @@ class SettingsActivity : AppCompatActivity() {
             AppPrefs.setHideControls(this, isChecked)
         }
 
+        setupAdBlock()
+        setupTabs()
+        setupAsrManage()
+        setupDownloadManage()
+
         val versionName = runCatching {
             packageManager.getPackageInfo(packageName, 0).versionName
         }.getOrDefault("Unknown")
         binding.versionTextView.text = getString(R.string.label_version, versionName)
+
+        renderDownloads()
+    }
+
+    override fun onResume() {
+        super.onResume()
+        refreshAdBlockStatus()
+    }
+
+    // ---------- 广告拦截设置（F-14） ----------
+    private fun setupAdBlock() {
+        AdBlockEngine.initAsync(applicationContext)
+        binding.adBlockSwitch.isChecked = AdBlockEngine.isEnabled(this)
+        binding.adBlockSwitch.setOnCheckedChangeListener { _, isChecked ->
+            AdBlockEngine.setEnabled(this, isChecked)
+            Toast.makeText(
+                this,
+                getString(
+                    if (isChecked) R.string.setting_adblock_enabled_on
+                    else R.string.setting_adblock_enabled_off
+                ),
+                Toast.LENGTH_SHORT
+            ).show()
+        }
+        binding.adBlockAutoHideSwitch.isChecked = AdBlockEngine.isAutoHideEnabled(this)
+        binding.adBlockAutoHideSwitch.setOnCheckedChangeListener { _, isChecked ->
+            AdBlockEngine.setAutoHideEnabled(this, isChecked)
+        }
+        binding.adBlockWhitelistRow.setOnClickListener { showWhitelistDialog() }
+        binding.adBlockUpdateRow.setOnClickListener { startRuleUpdate() }
+        refreshAdBlockStatus()
+    }
+
+    private fun refreshAdBlockStatus() {
+        val status = AdBlockEngine.ruleStatus(this)
+        binding.adBlockWhitelistRow.text =
+            getString(R.string.setting_adblock_whitelist, AdBlockEngine.getWhitelist(this).size)
+        binding.adBlockRulesStatusTextView.text =
+            if (status.lastUpdateAt > 0) {
+                val time = SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.getDefault())
+                    .format(Date(status.lastUpdateAt))
+                getString(R.string.setting_adblock_rules_status_fmt, status.onlineCount, time)
+            } else {
+                getString(R.string.setting_adblock_rules_never) +
+                    "；" + getString(R.string.setting_adblock_rules_builtin_fmt, status.builtinCount)
+            }
+        binding.adBlockTotalTextView.text =
+            getString(R.string.setting_adblock_total_fmt, status.totalBlocked)
+    }
+
+    private fun startRuleUpdate() {
+        if (AdBlockEngine.isUpdating()) {
+            Toast.makeText(this, R.string.setting_adblock_update_doing, Toast.LENGTH_SHORT).show()
+            return
+        }
+        Toast.makeText(this, R.string.setting_adblock_update_doing, Toast.LENGTH_SHORT).show()
+        AdBlockEngine.updateOnlineRules(this) { result ->
+            runOnUiThread {
+                if (result.isSuccess) {
+                    Toast.makeText(
+                        this,
+                        getString(R.string.setting_adblock_update_done_fmt, result.getOrDefault(0)),
+                        Toast.LENGTH_LONG
+                    ).show()
+                } else {
+                    Log.w(logTag, "ad rule update failed: ${result.exceptionOrNull()?.message}")
+                    Toast.makeText(this, R.string.setting_adblock_update_failed, Toast.LENGTH_LONG).show()
+                }
+                refreshAdBlockStatus()
+            }
+        }
+    }
+
+    private fun showWhitelistDialog() {
+        val container = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp2(20), dp2(12), dp2(20), dp2(4))
+        }
+        val listWrap = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+        }
+        container.addView(listWrap)
+
+        fun renderList() {
+            listWrap.removeAllViews()
+            val hosts = AdBlockEngine.getWhitelist(this)
+            if (hosts.isEmpty()) {
+                listWrap.addView(TextView(this).apply {
+                    text = getString(R.string.setting_adblock_whitelist_empty)
+                    textSize = 14f
+                    alpha = 0.7f
+                    setPadding(0, dp2(8), 0, dp2(8))
+                })
+                return
+            }
+            hosts.forEach { host ->
+                val row = LinearLayout(this).apply {
+                    orientation = LinearLayout.HORIZONTAL
+                    gravity = Gravity.CENTER_VERTICAL
+                    setPadding(0, dp2(8), 0, dp2(8))
+                }
+                row.addView(TextView(this).apply {
+                    text = host
+                    textSize = 15f
+                    layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
+                })
+                row.addView(Button(this).apply {
+                    text = getString(R.string.download_delete)
+                    textSize = 12f
+                    setOnClickListener {
+                        AdBlockEngine.removeWhitelist(this@SettingsActivity, host)
+                        renderList()
+                    }
+                })
+                listWrap.addView(row)
+            }
+        }
+        renderList()
+
+        container.addView(Button(this).apply {
+            text = getString(R.string.setting_adblock_whitelist_add)
+            setOnClickListener {
+                val input = EditText(this@SettingsActivity).apply {
+                    hint = getString(R.string.setting_adblock_whitelist_hint)
+                    isSingleLine = true
+                }
+                AlertDialog.Builder(this@SettingsActivity)
+                    .setTitle(R.string.setting_adblock_whitelist_add)
+                    .setView(input)
+                    .setPositiveButton(android.R.string.ok) { _, _ ->
+                        val host = input.text?.toString()?.trim().orEmpty()
+                        if (host.isNotBlank() && AdBlockEngine.addWhitelist(this@SettingsActivity, host)) {
+                            renderList()
+                        }
+                    }
+                    .setNegativeButton(android.R.string.cancel, null)
+                    .show()
+            }
+        })
+
+        AlertDialog.Builder(this)
+            .setTitle(R.string.setting_adblock_whitelist_title)
+            .setView(container)
+            .setPositiveButton(android.R.string.ok) { _, _ -> refreshAdBlockStatus() }
+            .show()
+    }
+
+    private fun dp2(v: Int): Int = (v * resources.displayMetrics.density).toInt()
+
+    private fun setupTabs() {
+        binding.settingsTabs.addTab(
+            binding.settingsTabs.newTab().setText(R.string.settings_tab_other))
+        binding.settingsTabs.addTab(
+            binding.settingsTabs.newTab().setText(R.string.downloads_section_title))
+        binding.settingsTabs.addTab(
+            binding.settingsTabs.newTab().setText(R.string.asr_manage_title))
+        binding.settingsTabs.addOnTabSelectedListener(object : TabLayout.OnTabSelectedListener {
+            override fun onTabSelected(tab: TabLayout.Tab) {
+                binding.pageOther.visibility = if (tab.position == 0) View.VISIBLE else View.GONE
+                binding.pageDownloads.visibility = if (tab.position == 1) View.VISIBLE else View.GONE
+                binding.pageAsr.visibility = if (tab.position == 2) View.VISIBLE else View.GONE
+                if (tab.position == 2) {
+                    refreshAsrPanel()
+                    if (!asrLoaded) loadTasks()
+                }
+            }
+
+            override fun onTabUnselected(tab: TabLayout.Tab) {}
+            override fun onTabReselected(tab: TabLayout.Tab) {
+                if (tab.position == 1) renderDownloads()
+                if (tab.position == 2) loadTasks()
+            }
+        })
+    }
+
+    // ---------- 音频识别：令牌面板 / 列表 / 播放 ----------
+
+    private fun setupAsrManage() {
+        asrAuthPanel = binding.asrAuthPanel
+        asrContentPanel = binding.asrContentPanel
+        asrTokenInput = binding.asrTokenInput
+        asrIdentityView = binding.asrIdentity
+        asrListView = binding.asrList
+        asrEmptyView = binding.asrEmpty
+
+        taskAdapter = object : BaseAdapter() {
+            override fun getCount(): Int = items.size
+            override fun getItem(position: Int): Any = items[position]
+            override fun getItemId(position: Int): Long = position.toLong()
+            override fun getView(position: Int, convertView: View?, parent: ViewGroup): View {
+                val v = convertView ?: LayoutInflater.from(this@SettingsActivity)
+                    .inflate(R.layout.asr_task_item, parent, false)
+                val item = items[position]
+                v.findViewById<TextView>(R.id.item_name).text = item.name
+                v.findViewById<TextView>(R.id.item_meta).text = metaText(item)
+                val play = v.findViewById<TextView>(R.id.item_play)
+                play.text = if (playingTaskId == item.id) "⏸" else "▶"
+                play.setOnClickListener { togglePlay(item) }
+                v.findViewById<TextView>(R.id.item_open).setOnClickListener { openTask(item) }
+                return v
+            }
+        }
+        asrListView.adapter = taskAdapter
+        asrListView.setOnItemClickListener { _, _, position, _ -> openTask(items[position]) }
+        asrListView.setOnItemLongClickListener { _, _, position, _ ->
+            confirmDelete(items[position])
+            true
+        }
+
+        binding.asrTokenVerifyBtn.setOnClickListener {
+            val token = asrTokenInput.text.toString().trim()
+            if (token.length < 40) {
+                Toast.makeText(this, R.string.asr_token_too_short, Toast.LENGTH_SHORT).show()
+                return@setOnClickListener
+            }
+            it.isEnabled = false
+            verifyAndEnter(token) { it.isEnabled = true }
+        }
+        binding.asrRefresh.setOnClickListener { loadTasks() }
+        binding.asrSwitch.setOnClickListener {
+            AlertDialog.Builder(this)
+                .setTitle(R.string.asr_manage_switch)
+                .setMessage(R.string.asr_switch_confirm)
+                .setNegativeButton(android.R.string.cancel, null)
+                .setPositiveButton(android.R.string.ok) { _, _ ->
+                    stopPlayback()
+                    AppPrefs.clearAsrAuth(this)
+                    items.clear()
+                    taskAdapter.notifyDataSetChanged()
+                    refreshAsrPanel()
+                }
+                .show()
+        }
+    }
+
+    private fun refreshAsrPanel() {
+        if (AsrAuth.hasToken(this)) {
+            asrAuthPanel.visibility = View.GONE
+            asrContentPanel.visibility = View.VISIBLE
+            asrIdentityView.text = getString(R.string.asr_identity_label, AppPrefs.getAsrUser(this).ifEmpty { "?? " })
+        } else {
+            asrAuthPanel.visibility = View.VISIBLE
+            asrContentPanel.visibility = View.GONE
+        }
+    }
+
+    private fun verifyAndEnter(token: String, onFail: () -> Unit) {
+        Thread {
+            try {
+                val user = AsrClient.verifyToken(this, token)
+                AppPrefs.setAsrAuth(this, token, user)
+                runOnUiThread {
+                    if (isFinishing || isDestroyed) return@runOnUiThread
+                    onFail()
+                    refreshAsrPanel()
+                    loadTasks()
+                    Toast.makeText(this, getString(R.string.asr_token_welcome, user), Toast.LENGTH_SHORT).show()
+                }
+            } catch (e: Exception) {
+                runOnUiThread {
+                    if (isFinishing || isDestroyed) return@runOnUiThread
+                    onFail()
+                    Toast.makeText(this, asrErrorText(e), Toast.LENGTH_LONG).show()
+                }
+            }
+        }.start()
+    }
+
+    private fun loadTasks() {
+        Thread {
+            try {
+                val arr = AsrClient.listTasks(this)
+                val parsed = ArrayList<TaskItem>(arr.length())
+                for (i in 0 until arr.length()) {
+                    val o = arr.optJSONObject(i) ?: continue
+                    parsed.add(
+                        TaskItem(
+                            id = o.optString("task_id"),
+                            name = o.optString("name", "未命名录音"),
+                            status = o.optString("status"),
+                            stage = o.optString("stage"),
+                            createdAt = o.optLong("created_at"),
+                            durationMs = o.optLong("duration_ms"),
+                            isVideo = o.optBoolean("is_video"),
+                            shareCount = o.optInt("share_count", 0)
+                        )
+                    )
+                }
+                runOnUiThread {
+                    if (isFinishing || isDestroyed) return@runOnUiThread
+                    items.clear()
+                    items.addAll(parsed)
+                    taskAdapter.notifyDataSetChanged()
+                    asrListView.visibility = if (items.isEmpty()) View.GONE else View.VISIBLE
+                    asrEmptyView.visibility = if (items.isEmpty()) View.VISIBLE else View.GONE
+                }
+                asrLoaded = true
+            } catch (e: AsrAuthException) {
+                runOnUiThread { onAuthLost() }
+            } catch (e: Exception) {
+                runOnUiThread {
+                    if (!isFinishing && !isDestroyed) Toast.makeText(this, asrErrorText(e), Toast.LENGTH_LONG).show()
+                }
+            }
+        }.start()
+    }
+
+    /** 点击条目：播放/暂停对应录音（语音消息式）。 */
+    private fun togglePlay(item: TaskItem) {
+        if (item.status != "SUCCEEDED") {
+            Toast.makeText(this, R.string.asr_task_not_ready, Toast.LENGTH_SHORT).show()
+            return
+        }
+        if (playingTaskId == item.id) {
+            val p = mediaPlayer
+            if (p != null) {
+                if (p.isPlaying) p.pause() else p.start()
+            }
+            return
+        }
+        stopPlayback()
+        playingTaskId = item.id
+        taskAdapter.notifyDataSetChanged()
+        mediaPlayer = MediaPlayer().apply {
+            setAudioAttributes(
+                android.media.AudioAttributes.Builder()
+                    .setUsage(android.media.AudioAttributes.USAGE_MEDIA)
+                    .setContentType(android.media.AudioAttributes.CONTENT_TYPE_SPEECH)
+                    .build()
+            )
+            setDataSource(AsrClient.taskAudioUrl(this@SettingsActivity, item.id))
+            setOnPreparedListener { it.start() }
+            setOnCompletionListener {
+                val finishedId = playingTaskId
+                playingTaskId = null
+                if (finishedId != null) taskAdapter.notifyDataSetChanged()
+            }
+            setOnErrorListener { _, what, extra ->
+                Log.e(logTag, "playback error what=$what extra=$extra")
+                stopPlayback()
+                Toast.makeText(this@SettingsActivity, R.string.asr_playback_failed, Toast.LENGTH_SHORT).show()
+                true
+            }
+            prepareAsync()
+        }
+    }
+
+    private fun stopPlayback() {
+        mediaPlayer?.run {
+            runCatching { stop() }
+            release()
+        }
+        mediaPlayer = null
+        if (playingTaskId != null) {
+            playingTaskId = null
+            taskAdapter.notifyDataSetChanged()
+        }
+    }
+
+    private fun openTask(item: TaskItem) {
+        Thread {
+            try {
+                val task = AsrClient.getTask(this, item.id)
+                val status = task.optString("status")
+                runOnUiThread {
+                    if (isFinishing || isDestroyed) return@runOnUiThread
+                    when (status) {
+                        "SUCCEEDED" -> {
+                            val resultFile = File(cacheDir, "asr_result_${item.id}.json")
+                            resultFile.writeText(task.getJSONObject("result").toString(), Charsets.UTF_8)
+                            val it = Intent(this, AsrResultActivity::class.java)
+                                .putExtra("result_path", resultFile.absolutePath)
+                                .putExtra("filename", item.name)
+                                .putExtra("task_id", item.id)
+                            val opts = task.optJSONObject("options")
+                            if (opts != null) {
+                                it.putExtra("opt_timestamps", opts.optBoolean("timestamps"))
+                                    .putExtra("opt_diarize", opts.optBoolean("diarize"))
+                                    .putExtra("opt_mandarin", opts.optBoolean("dialect2mandarin"))
+                            }
+                            startActivity(it)
+                        }
+                        "FAILED" -> Toast.makeText(
+                            this,
+                            getString(R.string.asr_failed_prefix) + task.optString("error", "识别失败"),
+                            Toast.LENGTH_LONG
+                        ).show()
+                        else -> Toast.makeText(
+                            this,
+                            getString(R.string.asr_task_running, task.optString("stage", "处理中")),
+                            Toast.LENGTH_SHORT
+                        ).show()
+                    }
+                }
+            } catch (e: AsrAuthException) {
+                runOnUiThread { onAuthLost() }
+            } catch (e: Exception) {
+                runOnUiThread {
+                    if (!isFinishing && !isDestroyed) Toast.makeText(this, asrErrorText(e), Toast.LENGTH_LONG).show()
+                }
+            }
+        }.start()
+    }
+
+    private fun confirmDelete(item: TaskItem) {
+        AlertDialog.Builder(this)
+            .setTitle(R.string.asr_delete_title)
+            .setMessage(getString(R.string.asr_delete_confirm, item.name))
+            .setNegativeButton(android.R.string.cancel, null)
+            .setPositiveButton(R.string.asr_delete_ok) { _, _ ->
+                Thread {
+                    try {
+                        AsrClient.deleteTask(this, item.id)
+                        runOnUiThread {
+                            if (isFinishing || isDestroyed) return@runOnUiThread
+                            if (playingTaskId == item.id) stopPlayback()
+                            items.removeAll { it.id == item.id }
+                            taskAdapter.notifyDataSetChanged()
+                            asrListView.visibility = if (items.isEmpty()) View.GONE else View.VISIBLE
+                            asrEmptyView.visibility = if (items.isEmpty()) View.VISIBLE else View.GONE
+                            Toast.makeText(this, R.string.asr_deleted, Toast.LENGTH_SHORT).show()
+                        }
+                    } catch (e: AsrAuthException) {
+                        runOnUiThread { onAuthLost() }
+                    } catch (e: Exception) {
+                        runOnUiThread {
+                            if (!isFinishing && !isDestroyed) Toast.makeText(this, asrErrorText(e), Toast.LENGTH_LONG).show()
+                        }
+                    }
+                }.start()
+            }
+            .show()
+    }
+
+    private fun onAuthLost() {
+        if (isFinishing || isDestroyed) return
+        stopPlayback()
+        AppPrefs.clearAsrAuth(this)
+        items.clear()
+        taskAdapter.notifyDataSetChanged()
+        refreshAsrPanel()
+        Toast.makeText(this, R.string.asr_token_invalid, Toast.LENGTH_LONG).show()
+    }
+
+    private fun metaText(item: TaskItem): String {
+        val parts = mutableListOf<String>()
+        if (item.isVideo) parts.add("视频")
+        when (item.status) {
+            "SUCCEEDED" -> {
+                val sec = item.durationMs / 1000
+                if (sec > 0) parts.add("时长 %d分%02d秒".format(sec / 60, sec % 60))
+                parts.add(formatDate(item.createdAt))
+                if (item.shareCount > 0) parts.add("已分享${item.shareCount}条")
+            }
+            "FAILED" -> parts.add("识别失败 · " + formatDate(item.createdAt))
+            else -> {
+                val stage = item.stage.ifEmpty { "处理中" }
+                parts.add("$stage · " + formatDate(item.createdAt))
+            }
+        }
+        return parts.joinToString(" · ")
+    }
+
+    private fun asrErrorText(e: Exception): String =
+        getString(R.string.asr_failed_prefix) + (e.message ?: e.toString())
+
+    // ---------- 下载管理渲染 ----------
+
+    private fun setupDownloadManage() {
+        binding.btnDownloadManage.setOnClickListener { enterSelection(null) }
+        binding.btnDownloadCancel.setOnClickListener { exitSelection() }
+        binding.btnDownloadDelete.setOnClickListener { confirmDeleteSelected() }
+        binding.cbDownloadSelectAll.setOnClickListener {
+            // 点击时 CheckBox 已切换到新状态：勾上=全选，取消=清空
+            val selectAll = binding.cbDownloadSelectAll.isChecked
+            selectedIds.clear()
+            if (selectAll) downloadStore.load().forEach { selectedIds.add(it.id) }
+            renderDownloads()
+        }
+    }
+
+    private fun renderDownloads() {
+        val records = downloadStore.load()
+        Log.d(logTag, "renderDownloads: ${records.size} records, selectionMode=$selectionMode")
+        if (selectionMode) {
+            binding.downloadSelectionBar.visibility = View.VISIBLE
+            binding.btnDownloadManage.visibility = View.GONE
+            binding.cbDownloadSelectAll.isChecked =
+                records.isNotEmpty() && records.all { it.id in selectedIds }
+            binding.btnDownloadDelete.text = getString(R.string.download_delete_fmt, selectedIds.size)
+            binding.btnDownloadDelete.isEnabled = selectedIds.isNotEmpty()
+            binding.btnDownloadDelete.alpha = if (selectedIds.isEmpty()) 0.5f else 1f
+        } else {
+            binding.downloadSelectionBar.visibility = View.GONE
+            binding.btnDownloadManage.visibility =
+                if (records.isEmpty()) View.GONE else View.VISIBLE
+        }
+        binding.downloadsContainer.removeAllViews()
+        if (records.isEmpty()) {
+            binding.downloadsContainer.addView(
+                TextView(this).apply {
+                    text = getString(R.string.downloads_empty)
+                    setTextAppearance(android.R.style.TextAppearance_Small)
+                    alpha = 0.7f
+                    setPadding(0, dp(4), 0, dp(4))
+                }
+            )
+            return
+        }
+        records.forEach { record ->
+            binding.downloadsContainer.addView(buildDownloadRow(record))
+        }
+    }
+
+    private fun buildDownloadRow(record: DownloadRecord): View {
+        val content = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+
+        val title = TextView(this).apply {
+            text = record.fileName.ifBlank { record.title.ifBlank { record.id } }
+            maxLines = 1
+            ellipsize = android.text.TextUtils.TruncateAt.END
+            setTextAppearance(android.R.style.TextAppearance_Medium)
+        }
+        content.addView(title)
+
+        val statusText = TextView(this).apply {
+            text = describeStatus(record)
+            setTextAppearance(android.R.style.TextAppearance_Small)
+            alpha = 0.8f
+            setPadding(0, dp(2), 0, 0)
+        }
+        content.addView(statusText)
+
+        if (record.status == DownloadStatus.RUNNING) {
+            val bar = ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal).apply {
+                isIndeterminate = false
+                max = 100
+                progress = record.progress
+                layoutParams = LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.MATCH_PARENT,
+                    LinearLayout.LayoutParams.WRAP_CONTENT
+                ).apply { topMargin = dp(4) }
+            }
+            content.addView(bar)
+        }
+
+        if (selectionMode) {
+            val row = LinearLayout(this).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER_VERTICAL
+                background = ContextCompat.getDrawable(context, R.drawable.bg_glass_rounded)
+                setPadding(dp(4), dp(4), dp(12), dp(4))
+                layoutParams = LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.MATCH_PARENT,
+                    LinearLayout.LayoutParams.WRAP_CONTENT
+                ).apply { bottomMargin = dp(8) }
+            }
+            row.addView(CheckBox(this).apply {
+                isChecked = record.id in selectedIds
+                isClickable = false
+                isFocusable = false
+            })
+            content.layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+            row.addView(content)
+            row.setOnClickListener { toggleSelect(record.id) }
+            return row
+        }
+
+        content.background = ContextCompat.getDrawable(this, R.drawable.bg_glass_rounded)
+        content.setPadding(dp(12), dp(10), dp(12), dp(10))
+        content.layoutParams = LinearLayout.LayoutParams(
+            LinearLayout.LayoutParams.MATCH_PARENT,
+            LinearLayout.LayoutParams.WRAP_CONTENT
+        ).apply { bottomMargin = dp(8) }
+        content.setOnClickListener { openDownload(record) }
+        content.setOnLongClickListener { enterSelection(record.id); true }
+        return content
+    }
+
+    // ---------- 下载管理：批量选择与删除 ----------
+
+    private fun enterSelection(firstId: String?) {
+        selectionMode = true
+        selectedIds.clear()
+        firstId?.let { selectedIds.add(it) }
+        renderDownloads()
+    }
+
+    private fun exitSelection() {
+        selectionMode = false
+        selectedIds.clear()
+        renderDownloads()
+    }
+
+    private fun toggleSelect(id: String) {
+        if (!selectedIds.remove(id)) selectedIds.add(id)
+        renderDownloads()
+    }
+
+    private fun confirmDeleteSelected() {
+        if (selectedIds.isEmpty()) return
+        val ids = selectedIds.toSet()
+        val records = downloadStore.load().filter { it.id in ids }
+        if (records.isEmpty()) {
+            exitSelection()
+            return
+        }
+        val hasFile = records.any {
+            it.status == DownloadStatus.DONE &&
+                (it.uri.startsWith("content://") || it.path.isNotBlank() || it.fileName.isNotBlank())
+        }
+        var fileBox: CheckBox? = null
+        val builder = AlertDialog.Builder(this)
+            .setTitle(R.string.download_delete_title)
+            .setMessage(getString(R.string.download_delete_confirm_fmt, records.size))
+        if (hasFile) {
+            fileBox = CheckBox(this).apply {
+                text = getString(R.string.download_delete_also_file)
+                isChecked = true
+                setPadding(dp(8), dp(12), dp(8), 0)
+            }
+            builder.setView(fileBox)
+        }
+        builder
+            .setNegativeButton(android.R.string.cancel, null)
+            .setPositiveButton(R.string.download_delete) { _, _ ->
+                deleteRecords(ids, fileBox?.isChecked ?: false)
+            }
+            .show()
+    }
+
+    private fun deleteRecords(ids: Set<String>, alsoDeleteFile: Boolean) {
+        val records = downloadStore.load().filter { it.id in ids }
+        Thread {
+            var fileFail = 0
+            records.forEach { record ->
+                if (record.status == DownloadStatus.RUNNING) cancelRunningDownload(record)
+                if (alsoDeleteFile && record.status == DownloadStatus.DONE &&
+                    !deleteDownloadFile(record)
+                ) {
+                    fileFail++
+                }
+            }
+            downloadStore.removeByIds(ids)
+            runOnUiThread {
+                if (isFinishing || isDestroyed) return@runOnUiThread
+                exitSelection()
+                val base = getString(R.string.download_deleted_fmt, records.size)
+                val msg = if (fileFail > 0) {
+                    "$base\n${getString(R.string.download_file_delete_partial_fail)}"
+                } else {
+                    base
+                }
+                Toast.makeText(this, msg, Toast.LENGTH_SHORT).show()
+            }
+        }.start()
+    }
+
+    /** 取消进行中的下载：直链移除系统任务（连带半成品），m3u8 通知服务在下一分片前停止 */
+    private fun cancelRunningDownload(record: DownloadRecord) {
+        if (record.kind == DownloadKind.DIRECT) {
+            val dmId = record.id.removePrefix("dm_").toLongOrNull() ?: return
+            runCatching { getSystemService(DownloadManager::class.java)?.remove(dmId) }
+                .onFailure { Log.w(logTag, "dm remove failed: ${it.message}") }
+        } else {
+            VideoDownloadService.requestCancel(record.id)
+        }
+    }
+
+    /** 删除已完成下载对应的文件：先按记录/文件名找 MediaStore 条目删，找不到再按路径删 */
+    private fun deleteDownloadFile(record: DownloadRecord): Boolean {
+        val uri = runCatching { resolveRecordUri(record) }.getOrNull()
+        if (uri != null) {
+            val deleted = runCatching { contentResolver.delete(Uri.parse(uri), null, null) }
+                .onFailure { Log.w(logTag, "media delete failed: ${it.message}") }
+                .getOrDefault(0) > 0
+            if (deleted) return true
+        }
+        candidateFiles(record).forEach { f ->
+            if (f.exists() && runCatching { f.delete() }.getOrDefault(false)) return true
+        }
+        // 记录里既无 uri 也找不到文件，视为已删干净（可能早被手动清理）
+        return uri == null && candidateFiles(record).none { it.exists() }
+    }
+
+    private fun candidateFiles(record: DownloadRecord): List<File> {
+        val out = mutableListOf<File>()
+        if (record.path.isNotBlank()) {
+            val p = File(record.path)
+            out += if (p.isAbsolute) p else File(Environment.getExternalStorageDirectory(), record.path)
+        }
+        if (record.fileName.isNotBlank()) {
+            out += File(
+                Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS),
+                "轻舟浏览器/${record.fileName}"
+            )
+        }
+        return out.distinctBy { it.absolutePath }
+    }
+
+
+    /** 直链下载实时进度（DownloadManager 查询；m3u8 用记录里的分片进度） */
+    private fun queryDirectProgress(record: DownloadRecord): Int? {
+        val dmId = record.id.removePrefix("dm_").toLongOrNull() ?: return null
+        val dm = getSystemService(DownloadManager::class.java) ?: return null
+        return runCatching {
+            dm.query(DownloadManager.Query().setFilterById(dmId))?.use { c ->
+                if (!c.moveToFirst()) return@runCatching null
+                val soFarIdx = c.getColumnIndex(DownloadManager.COLUMN_BYTES_DOWNLOADED_SO_FAR)
+                val totalIdx = c.getColumnIndex(DownloadManager.COLUMN_TOTAL_SIZE_BYTES)
+                if (soFarIdx < 0 || totalIdx < 0) return@runCatching null
+                val soFar = c.getLong(soFarIdx)
+                val total = c.getLong(totalIdx)
+                if (total <= 0) null else ((soFar * 100) / total).toInt().coerceIn(0, 100)
+            }
+        }.getOrNull()
+    }
+
+    private fun describeStatus(record: DownloadRecord): String = when (record.status) {
+        DownloadStatus.RUNNING -> {
+            val pct = if (record.kind == com.trae.simplebrowser.core.DownloadKind.DIRECT) {
+                queryDirectProgress(record) ?: record.progress
+            } else {
+                record.progress
+            }
+            "${record.detail.ifBlank { getString(R.string.download_status_downloading) }} $pct%"
+        }
+
+        DownloadStatus.DONE -> getString(
+            R.string.download_status_done_fmt,
+            formatTime(record.finishedAt)
+        ) + if (record.path.isNotBlank()) "\n${record.path}" else ""
+
+        DownloadStatus.FAILED -> getString(
+            R.string.download_status_failed_fmt,
+            record.detail.ifBlank { getString(R.string.video_download_error_network) }
+        )
+    }
+
+    /** 点击记录：解析 content uri 直接打开；静态 uri 缺失时按文件名查 MediaStore */
+    private fun openDownload(record: DownloadRecord) {
+        if (record.status != DownloadStatus.DONE) {
+            Toast.makeText(this, R.string.download_open_failed, Toast.LENGTH_LONG).show()
+            return
+        }
+        val uri = resolveRecordUri(record)
+        if (uri == null) {
+            Toast.makeText(this, R.string.download_open_failed, Toast.LENGTH_LONG).show()
+            return
+        }
+        runCatching {
+            startActivity(
+                Intent(Intent.ACTION_VIEW).apply {
+                    setDataAndType(Uri.parse(uri), "video/*")
+                    addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                }
+            )
+        }.onFailure {
+            Log.w(logTag, "open download failed: ${it.message}")
+            Toast.makeText(this, R.string.download_open_failed, Toast.LENGTH_LONG).show()
+        }
+    }
+
+    /** 已下载文件的 content uri：优先记录值，否则按 DISPLAY_NAME 查 Downloads/Video 集合 */
+    private fun resolveRecordUri(record: DownloadRecord): String? {
+        if (record.uri.startsWith("content://")) return record.uri
+        val name = record.fileName
+        if (name.isBlank()) return null
+        queryUriByName(MediaStore.Downloads.EXTERNAL_CONTENT_URI, name)?.let { return it }
+        queryUriByName(MediaStore.Video.Media.EXTERNAL_CONTENT_URI, name)?.let { return it }
+        return null
+    }
+
+    private fun queryUriByName(collection: Uri, displayName: String): String? = runCatching {
+        contentResolver.query(
+            collection,
+            arrayOf(MediaStore.MediaColumns._ID),
+            "${MediaStore.MediaColumns.DISPLAY_NAME}=?",
+            arrayOf(displayName),
+            null
+        )?.use { c ->
+            if (c.moveToFirst()) {
+                android.content.ContentUris.withAppendedId(collection, c.getLong(0)).toString()
+            } else {
+                null
+            }
+        }
+    }.getOrNull()
+
+    private fun formatTime(millis: Long): String {
+        if (millis <= 0) return ""
+        return SimpleDateFormat("MM-dd HH:mm", Locale.getDefault()).format(Date(millis))
+    }
+
+    private fun formatDate(ts: Long): String {
+        if (ts <= 0) return ""
+        return SimpleDateFormat("MM-dd HH:mm", Locale.CHINA).format(Date(ts))
+    }
+
+    private fun dp(v: Int): Int = (v * resources.displayMetrics.density).toInt()
+
+    override fun onDestroy() {
+        stopPlayback()
+        super.onDestroy()
     }
 
     // Two-finger swipe down gesture variables
@@ -29,6 +915,15 @@ class SettingsActivity : AppCompatActivity() {
     private var startY2 = 0f
     private var isTwoFingerGesture = false
     private val swipeThresholdPx by lazy { 100 * resources.displayMetrics.density }
+
+    @Deprecated("Deprecated in Java")
+    override fun onBackPressed() {
+        if (selectionMode) {
+            exitSelection()
+        } else {
+            super.onBackPressed()
+        }
+    }
 
     override fun dispatchTouchEvent(ev: android.view.MotionEvent): Boolean {
         val action = ev.actionMasked
@@ -52,10 +947,10 @@ class SettingsActivity : AppCompatActivity() {
                 if (isTwoFingerGesture && ev.pointerCount >= 2) {
                     val y1 = ev.getY(0)
                     val y2 = ev.getY(1)
-                    
+
                     val dy1 = y1 - startY1
                     val dy2 = y2 - startY2
-                    
+
                     // Check if both fingers moved down significantly (> 100dp)
                     if (dy1 > swipeThresholdPx && dy2 > swipeThresholdPx) {
                         isTwoFingerGesture = false // Reset

@@ -1,7 +1,16 @@
 <menu xmlns:android="http://schemas.android.com/apk/res/android">
     <item
+        android:id="@+id/menu_new_tab"
+        android:title="@string/tab_new" />
+    <item
         android:id="@+id/menu_add_to_home"
         android:title="@string/menu_add_to_home" />
+    <item
+        android:id="@+id/menu_identity"
+        android:title="@string/menu_identity" />
+    <item
+        android:id="@+id/menu_strip_overlay"
+        android:title="@string/menu_strip_overlay" />
     <item
         android:id="@+id/menu_open_bookmarks"
         android:title="@string/menu_open_bookmarks" />
