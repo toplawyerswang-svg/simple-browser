@@ -89,7 +89,6 @@ class MainActivity : AppCompatActivity() {
     private val collectVideoUrlJs = """(function(){var vs=document.querySelectorAll('video');var best='';var bestArea=0;for(var i=0;i<vs.length;i++){var v=vs[i];var s=v.currentSrc||v.src||'';if(!s){var q=v.querySelector('source');if(q)s=q.src||''}if(!s)continue;var area=(v.videoWidth||v.clientWidth||0)*(v.videoHeight||v.clientHeight||0);if(!v.paused&&!v.ended){return s}if(area>=bestArea){bestArea=area;best=s}}return best})()"""
     private var lastMixedContentFixAtMs: Long = 0
     private var lastPopupBlockedToastAtMs: Long = 0
-    private var lastAdBadgeUpdateAtMs: Long = 0
     private var currentFavicon: Bitmap? = null
     private var filePathCallback: ValueCallback<Array<Uri>>? = null
     private var pendingCapturedUri: Uri? = null
@@ -127,7 +126,6 @@ class MainActivity : AppCompatActivity() {
         binding.urlEditText.setText(target.url.orEmpty())
         updateBookmarkIcon()
         updateIdentityBadge()
-        lastAdBadgeUpdateAtMs = 0
         applyAdBadge()
         Log.d(logTag, "Tab attach: $tabId, url=${target.url.orEmpty().take(60)}")
     }
@@ -814,8 +812,8 @@ class MainActivity : AppCompatActivity() {
                 val urlStr = url.toString()
                 recordMediaUrl(urlStr)
 
-                // 广告拦截：主文档放行（避免整页空白），子资源命中广告域名表直接掐断
-                if (urlStr.startsWith("http")) {
+                // 广告拦截：主文档放行（避免整页白屏），仅拦子资源；命中广告域名表直接掐断
+                if (urlStr.startsWith("http") && !request.isForMainFrame) {
                     // pageHost 传 null，引擎按 view 自查在案的主文档 host（供白名单判断）
                     val blocked = AdBlockEngine.shouldBlock(this@MainActivity, view, null, url.host)
                     if (blocked) {
@@ -896,8 +894,9 @@ class MainActivity : AppCompatActivity() {
         webView.webChromeClient = object : WebChromeClient() {
             /**
              * 新窗口统一拦截分流：
-             * - JS 自动弹窗（isUserGesture=false）：拒绝并提示——这是"打开网页跳出广告"的主要来源；
+             * - JS 自动弹窗（isUserGesture=false）：广告拦截开启时拒绝并提示——这是"打开网页跳出广告"的主要来源；
              * - 用户手势弹窗（target=_blank 正常链接）：取链接地址新标签打开，原页面保留。
+             * 广告拦截总开关只影响自动弹窗；target=_blank 属于基础浏览能力，始终可用。
              */
             override fun onCreateWindow(
                 view: WebView,
@@ -906,8 +905,7 @@ class MainActivity : AppCompatActivity() {
                 resultMsg: android.os.Message?
             ): Boolean {
                 Log.i(logTag, "onCreateWindow: gesture=$isUserGesture dialog=$isDialog")
-                if (!AdBlockEngine.isEnabled(this@MainActivity)) return false
-                if (!isUserGesture) {
+                if (!isUserGesture && AdBlockEngine.isEnabled(this@MainActivity)) {
                     val now = SystemClock.uptimeMillis()
                     if (now - lastPopupBlockedToastAtMs > 2500) {
                         lastPopupBlockedToastAtMs = now
@@ -955,6 +953,8 @@ class MainActivity : AppCompatActivity() {
                     }
                 }
                 transport.webView = probe
+                // 必须 sendToTarget，引擎才会把弹窗导航装进 probe；缺了它 probe 永远空载
+                resultMsg.sendToTarget()
                 probe.postDelayed({
                     if (!captured) {
                         captured = true
@@ -1365,12 +1365,6 @@ class MainActivity : AppCompatActivity() {
 
     /** 地址栏拦截徽标：本页拦截数 > 0 时显示，点击看详情/快捷放行 */
     private fun updateAdBadge() {
-        val now = SystemClock.uptimeMillis()
-        if (now - lastAdBadgeUpdateAtMs < 300) {
-            Log.d(logTag, "AdBadge: update throttled")
-            return
-        }
-        lastAdBadgeUpdateAtMs = now
         applyAdBadge()
     }
 
@@ -1414,17 +1408,18 @@ class MainActivity : AppCompatActivity() {
                 if (hosts.size > 10) append("\n…")
             }
         }
-        AlertDialog.Builder(this)
+        val builder = AlertDialog.Builder(this)
             .setTitle(getString(R.string.adblock_detail_title))
             .setMessage(message)
-            .setPositiveButton(getString(R.string.adblock_allow_this, pageHost)) { _, _ ->
-                if (pageHost.isNotBlank() && AdBlockEngine.addWhitelist(this, pageHost)) {
+        if (pageHost.isNotBlank()) {
+            builder.setPositiveButton(getString(R.string.adblock_allow_this, pageHost)) { _, _ ->
+                if (AdBlockEngine.addWhitelist(this, pageHost)) {
                     Toast.makeText(this, getString(R.string.adblock_whitelist_added_fmt, pageHost), Toast.LENGTH_SHORT).show()
                     view.reload()
                 }
             }
-            .setNegativeButton(android.R.string.cancel, null)
-            .show()
+        }
+        builder.setNegativeButton(android.R.string.cancel, null).show()
     }
 
     /** 菜单"清理浮层广告"：激进移除大块遮罩与悬浮广告层（刷新即可恢复） */

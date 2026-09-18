@@ -280,6 +280,8 @@ object AdBlockEngine {
     }
 
     fun ruleStatus(context: Context): RuleStatus {
+        // 设置页可能在异步加载完成前就展示，先确保内置表就绪（毫秒级），避免显示 0 条
+        if (!loaded) loadAll(context.applicationContext)
         val p = prefs(context)
         return RuleStatus(
             builtinCount = builtinRules.size,
