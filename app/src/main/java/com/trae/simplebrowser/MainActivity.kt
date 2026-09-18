@@ -47,10 +47,13 @@ import com.trae.simplebrowser.core.AdBlockEngine
 import com.trae.simplebrowser.core.DownloadKind
 import com.trae.simplebrowser.core.DownloadRecord
 import com.trae.simplebrowser.core.DownloadStatus
+import com.trae.simplebrowser.core.HistoryStore
 import com.trae.simplebrowser.core.IconCropMath
 import com.trae.simplebrowser.core.MediaProbeLogic
 import com.trae.simplebrowser.core.MultiFingerGestureTracker
 import com.trae.simplebrowser.core.ProfileManager
+import com.trae.simplebrowser.core.SearchEngines
+import com.trae.simplebrowser.core.SuggestEngine
 import com.trae.simplebrowser.core.TabManager
 import com.trae.simplebrowser.core.VideoKind
 import com.trae.simplebrowser.core.VideoUrlSniffer
@@ -74,13 +77,18 @@ import android.graphics.drawable.Drawable
 import android.graphics.drawable.GradientDrawable
 import android.view.Gravity
 import android.view.ViewGroup
+import android.widget.AdapterView
 import android.widget.HorizontalScrollView
 import android.widget.ImageButton
 import android.widget.ImageView
 import android.widget.LinearLayout
+import android.widget.ListPopupWindow
 import android.widget.TextView
 import androidx.core.content.ContextCompat
 import android.provider.MediaStore
+import com.google.zxing.BarcodeFormat
+import com.google.zxing.EncodeHintType
+import com.google.zxing.qrcode.QRCodeWriter
 
 class MainActivity : AppCompatActivity() {
     private lateinit var binding: ActivityMainBinding
@@ -101,6 +109,22 @@ class MainActivity : AppCompatActivity() {
     private val tabManager = TabManager()
     private val tabWebViews = mutableMapOf<Long, WebView>()
     private var webViewLayoutParams: ViewGroup.LayoutParams? = null
+
+    // ---------- 桌面版 UA（F-15，按标签记忆） ----------
+    private val tabDesktopMode = mutableMapOf<Long, Boolean>()
+
+    // ---------- 地址栏联想（F-15） ----------
+    private var suggestPopup: ListPopupWindow? = null
+    private var suggestItems: List<SuggestEngineResult> = emptyList()
+    private var suppressSuggestOnce = false
+
+    /** 联想下拉条目（title + url 双行展示用） */
+    private data class SuggestEngineResult(val title: String, val url: String)
+
+    // ---------- 网页内查找（F-15） ----------
+    private var findBar: LinearLayout? = null
+    private var findInput: EditText? = null
+    private var findCountView: TextView? = null
 
     // ---------- 多账号身份（Profile 隔离） ----------
     /** 已创建的身份数量（含身份1）；仅在设备支持多身份时可能大于 1 */
@@ -123,10 +147,11 @@ class MainActivity : AppCompatActivity() {
         }
         target.onResume()
         tabManager.select(tabId)
-        binding.urlEditText.setText(target.url.orEmpty())
+        setAddressBarText(target.url.orEmpty())
         updateBookmarkIcon()
         updateIdentityBadge()
         applyAdBadge()
+        hideFindBar()
         Log.d(logTag, "Tab attach: $tabId, url=${target.url.orEmpty().take(60)}")
     }
 
@@ -136,7 +161,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     /** 新建一个标签（含 WebView）；已达上限时 Toast 提示。identity：目标身份序号（1 起始） */
-    private fun openNewTab(url: String = HOME_URL, identity: Int = 1): Long {
+    private fun openNewTab(url: String = homeUrl(), identity: Int = 1): Long {
         if (!tabManager.canCreate()) {
             Toast.makeText(
                 this,
@@ -167,6 +192,9 @@ class MainActivity : AppCompatActivity() {
         setupWebView(webView, profileName)
         val tab = tabManager.create(url = url, profile = profileName)
         tabWebViews[tab.id] = webView
+        if (tabDesktopMode[tab.id] == true) {
+            webView.settings.userAgentString = DESKTOP_USER_AGENT
+        }
 
         oldView?.let {
             it.onPause()
@@ -174,7 +202,7 @@ class MainActivity : AppCompatActivity() {
         }
         binding.root.addView(webView, 0, layoutParams)
         webView.loadUrl(url)
-        binding.urlEditText.setText(url)
+        setAddressBarText(url)
         updateBookmarkIcon()
         updateIdentityBadge()
         updateTabBadge()
@@ -255,7 +283,7 @@ class MainActivity : AppCompatActivity() {
             Toast.makeText(this, R.string.identity_unsupported, Toast.LENGTH_LONG).show()
             return
         }
-        val currentUrl = currentWebView.url.orEmpty().takeIf { it.isNotBlank() } ?: HOME_URL
+        val currentUrl = currentWebView.url.orEmpty().takeIf { it.isNotBlank() } ?: homeUrl()
         val currentIdentity = currentTabIdentity()
 
         val container = LinearLayout(this).apply {
@@ -413,13 +441,13 @@ class MainActivity : AppCompatActivity() {
         if (firstTabUsesIdentity) {
             binding.root.removeView(binding.webView)
             openNewTab(
-                intent?.dataString?.takeIf { it.isNotBlank() } ?: HOME_URL,
+                intent?.dataString?.takeIf { it.isNotBlank() } ?: homeUrl(),
                 launchIdentity
             )
         } else {
             // 第一个标签复用布局中的 WebView（F-08）
             setupWebView(binding.webView)
-            val firstTab = tabManager.create(url = HOME_URL)
+            val firstTab = tabManager.create(url = homeUrl())
             tabWebViews[firstTab.id] = binding.webView
         }
         setupControls()
@@ -431,7 +459,7 @@ class MainActivity : AppCompatActivity() {
             if (!initialUrl.isNullOrBlank()) {
                 loadUrl(initialUrl)
             } else if (savedInstanceState == null) {
-                loadUrl(HOME_URL)
+                loadUrl(homeUrl())
             }
         }
 
@@ -454,7 +482,7 @@ class MainActivity : AppCompatActivity() {
         val url = intent.dataString
         if (identity > 1) {
             // 身份快捷方式：新开该身份标签并加载目标网址
-            openNewTab(url?.takeIf { it.isNotBlank() } ?: HOME_URL, identity)
+            openNewTab(url?.takeIf { it.isNotBlank() } ?: homeUrl(), identity)
             Toast.makeText(this, getString(R.string.identity_opened, identity), Toast.LENGTH_SHORT).show()
         } else if (!url.isNullOrBlank()) {
             Log.i(logTag, "onNewIntent -> loadUrl: $url")
@@ -613,6 +641,17 @@ class MainActivity : AppCompatActivity() {
         // 仅恢复当前标签的渲染与计时器；后台标签保持暂停
         currentWebView.onResume()
         currentWebView.resumeTimers()
+        // 设置页改动的浏览体验项对所有标签立即生效（无图模式/字体缩放）
+        val dataSaver = AppPrefs.isDataSaver(this)
+        val textZoom = AppPrefs.getTextZoom(this)
+        tabWebViews.values.forEach {
+            it.settings.blockNetworkImage = dataSaver
+            it.settings.textZoom = textZoom
+        }
+        if (AppPrefs.consumePendingClearCache(this) && tabWebViews.isNotEmpty()) {
+            runCatching { tabWebViews.values.first().clearCache(true) }
+            Toast.makeText(this, R.string.toast_cache_cleared, Toast.LENGTH_SHORT).show()
+        }
     }
 
     override fun onPause() {
@@ -689,6 +728,7 @@ class MainActivity : AppCompatActivity() {
         binding.btnVideoDownload.setOnClickListener { onVideoDownloadClicked() }
         binding.addToHomeButton.setOnClickListener { showPinShortcutNameDialog() }
         binding.moreButton.setOnClickListener { showMoreMenu() }
+        setupUrlSuggest()
     }
 
     /** 标签切换器：列表（切换/关闭）+ 新建 */
@@ -779,10 +819,14 @@ class MainActivity : AppCompatActivity() {
         settings.setSupportMultipleWindows(true)
         settings.mediaPlaybackRequiresUserGesture = false
         settings.databaseEnabled = true
-        
-        // 设置用户代理为较新的Chrome版本，以支持更多播放器
+
+        // 无图模式（省流量）与网页字体缩放（设置页可调，onResume 对全部标签刷新）
+        settings.blockNetworkImage = AppPrefs.isDataSaver(this)
+        settings.textZoom = AppPrefs.getTextZoom(this)
+
+        // 设置用户代理为较新的Chrome版本，以支持更多播放器（桌面版切换见 tabDesktopMode）
         val originalUA = settings.userAgentString
-        settings.userAgentString = "Mozilla/5.0 (Linux; Android 14; Mobile) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.6099.144 Mobile Safari/537.36"
+        settings.userAgentString = MOBILE_USER_AGENT
 
         // Cookie 按身份取：非默认身份使用其 Profile 独立的 CookieManager
         val profileCookies = ProfileManager.cookieManager(profileName)
@@ -790,6 +834,11 @@ class MainActivity : AppCompatActivity() {
         profileCookies.setAcceptCookie(true)
         profileCookies.setAcceptThirdPartyCookies(webView, true)
         WebViewDatabase.getInstance(this)
+
+        // 网页内查找：匹配计数回调（查找栏 UI 见 showFindBar()）
+        webView.setFindListener { activeMatchOrdinal, numberOfMatches, _ ->
+            findCountView?.text = getString(R.string.find_count_fmt, activeMatchOrdinal + 1, numberOfMatches)
+        }
 
         webView.webViewClient = object : WebViewClient() {
             private fun handleNonHttpUri(uri: Uri): Boolean {
@@ -848,18 +897,22 @@ class MainActivity : AppCompatActivity() {
                 val tabId = tabIdOf(view)
                 tabId?.let { tabManager.update(it, url = url) }
                 if (view === currentWebViewSafe()) {
-                    binding.urlEditText.setText(url)
+                    setAddressBarText(url)
                     updateBookmarkIcon()
                 }
                 runMixedContentFixThrottled(view)
                 injectAdAutoHideJs(view, url)
+                // 浏览历史：仅记录 http(s) 主文档（file://、intent: 等不记）
+                if (url.startsWith("http")) {
+                    AppPrefs.addHistory(this@MainActivity, currentTitle, url)
+                }
             }
 
             override fun onPageStarted(view: WebView, url: String, favicon: android.graphics.Bitmap?) {
                 AdBlockEngine.resetPageBlocked(view)
                 AdBlockEngine.setPageHost(view, runCatching { Uri.parse(url).host }.getOrNull())
                 if (view === currentWebViewSafe()) {
-                    binding.urlEditText.setText(url)
+                    setAddressBarText(url)
                     updateBookmarkIcon()
                     updateAdBadge()
                 }
@@ -1434,6 +1487,197 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    // ---------- 浏览体验增强（F-15） ----------
+
+    /** 桌面版网站：按标签记忆 UA 并刷新当前页 */
+    private fun toggleDesktopUa() {
+        val view = currentWebViewSafe() ?: return
+        val tabId = tabManager.currentId ?: return
+        val desktop = !(tabDesktopMode[tabId] ?: false)
+        tabDesktopMode[tabId] = desktop
+        view.settings.userAgentString = if (desktop) DESKTOP_USER_AGENT else MOBILE_USER_AGENT
+        view.reload()
+        Toast.makeText(
+            this,
+            getString(if (desktop) R.string.toast_desktop_ua_on else R.string.toast_desktop_ua_off),
+            Toast.LENGTH_SHORT
+        ).show()
+    }
+
+    /** 网页内查找栏：输入实时查找，▲▼ 跳转匹配项 */
+    private fun showFindBar() {
+        if (findBar != null) {
+            findInput?.setSelection(findInput?.text?.length ?: 0)
+            findInput?.requestFocus()
+            return
+        }
+        val bar = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setBackgroundColor(Color.parseColor("#EE223344"))
+            setPadding(dpToPx(10), dpToPx(6), dpToPx(10), dpToPx(6))
+        }
+        val input = EditText(this).apply {
+            hint = getString(R.string.find_hint)
+            isSingleLine = true
+            textSize = 14f
+            setTextColor(Color.WHITE)
+            setHintTextColor(Color.parseColor("#88FFFFFF"))
+            layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
+        }
+        val count = TextView(this).apply {
+            textSize = 12f
+            setTextColor(Color.WHITE)
+            setPadding(dpToPx(8), 0, dpToPx(8), 0)
+        }
+        fun arrowButton(glyph: String, onClick: () -> Unit): TextView = TextView(this).apply {
+            text = glyph
+            textSize = 16f
+            setTextColor(Color.WHITE)
+            setPadding(dpToPx(10), dpToPx(4), dpToPx(10), dpToPx(4))
+            setOnClickListener { onClick() }
+        }
+        bar.addView(input)
+        bar.addView(count)
+        bar.addView(arrowButton("▲") { currentWebViewSafe()?.findNext(false) })
+        bar.addView(arrowButton("▼") { currentWebViewSafe()?.findNext(true) })
+        bar.addView(arrowButton("✕") { hideFindBar() })
+
+        val params = androidx.constraintlayout.widget.ConstraintLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT,
+            ViewGroup.LayoutParams.WRAP_CONTENT
+        ).apply {
+            topToTop = androidx.constraintlayout.widget.ConstraintLayout.LayoutParams.PARENT_ID
+            startToStart = androidx.constraintlayout.widget.ConstraintLayout.LayoutParams.PARENT_ID
+            endToEnd = androidx.constraintlayout.widget.ConstraintLayout.LayoutParams.PARENT_ID
+        }
+        binding.root.addView(bar, 0, params)
+        findBar = bar
+        findInput = input
+        findCountView = count
+
+        input.addTextChangedListener(object : TextWatcher {
+            override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) {}
+            override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {}
+            override fun afterTextChanged(s: Editable?) {
+                currentWebViewSafe()?.findAllAsync(s?.toString().orEmpty())
+            }
+        })
+        input.requestFocus()
+    }
+
+    private fun hideFindBar() {
+        currentWebViewSafe()?.findAllAsync("")
+        findBar?.let { binding.root.removeView(it) }
+        findBar = null
+        findInput = null
+        findCountView = null
+    }
+
+    /** 当前页面生成二维码（设备间传网址） */
+    private fun showPageQrCode() {
+        val url = currentWebView.url.orEmpty()
+        if (url.isBlank()) return
+        val size = dpToPx(280)
+        val bitmap = runCatching { generateQrBitmap(url, size) }.getOrNull()
+        if (bitmap == null) {
+            Toast.makeText(this, R.string.toast_qr_failed, Toast.LENGTH_SHORT).show()
+            return
+        }
+        val iv = ImageView(this).apply {
+            setImageBitmap(bitmap)
+            setPadding(dpToPx(20), dpToPx(8), dpToPx(20), dpToPx(8))
+        }
+        AlertDialog.Builder(this)
+            .setTitle(getString(R.string.qr_page_title))
+            .setView(iv)
+            .setPositiveButton(android.R.string.ok, null)
+            .show()
+    }
+
+    private fun generateQrBitmap(content: String, sizePx: Int): Bitmap {
+        val hints = mapOf(
+            EncodeHintType.CHARACTER_SET to "UTF-8",
+            EncodeHintType.MARGIN to 1
+        )
+        val matrix = QRCodeWriter().encode(content, BarcodeFormat.QR_CODE, sizePx, sizePx, hints)
+        val bmp = Bitmap.createBitmap(matrix.width, matrix.height, Bitmap.Config.ARGB_8888)
+        for (x in 0 until matrix.width) {
+            for (y in 0 until matrix.height) {
+                bmp.setPixel(x, y, if (matrix.get(x, y)) Color.BLACK else Color.WHITE)
+            }
+        }
+        return bmp
+    }
+
+    // ---------- 地址栏联想（历史 + 书签，F-15） ----------
+
+    private fun setupUrlSuggest() {
+        val popup = ListPopupWindow(this).apply {
+            anchorView = binding.urlEditText
+            inputMethodMode = ListPopupWindow.INPUT_METHOD_NEEDED
+        }
+        val adapter = android.widget.ArrayAdapter<String>(
+            this, android.R.layout.simple_list_item_1
+        )
+        popup.setAdapter(adapter)
+        popup.setOnItemClickListener { _, _, position, _ ->
+            val item = suggestItems.getOrNull(position)
+            popup.dismiss()
+            if (item != null) {
+                suppressSuggestOnce = true
+                binding.urlEditText.setText(item.url)
+                binding.urlEditText.setSelection(item.url.length)
+                hideKeyboard()
+                loadUrl(item.url)
+            }
+        }
+        suggestPopup = popup
+
+        binding.urlEditText.addTextChangedListener(object : TextWatcher {
+            override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) {}
+            override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {}
+            override fun afterTextChanged(s: Editable?) {
+                if (suppressSuggestOnce) {
+                    suppressSuggestOnce = false
+                    return
+                }
+                val q = s?.toString()?.trim().orEmpty()
+                if (q.length < 2 || q.contains(" ") && q.startsWith("http")) {
+                    popup.dismiss()
+                    return
+                }
+                val suggestions = SuggestEngine.suggest(
+                    AppPrefs.getHistory(this@MainActivity),
+                    AppPrefs.getBookmarks(this@MainActivity),
+                    q
+                )
+                if (suggestions.isEmpty() || binding.urlEditText.windowToken == null) {
+                    popup.dismiss()
+                    return
+                }
+                suggestItems = suggestions.map { SuggestEngineResult(it.title, it.url) }
+                adapter.clear()
+                adapter.addAll(suggestItems.map { item ->
+                    val host = runCatching { Uri.parse(item.url).host }.getOrNull() ?: item.url
+                    "${item.title}  ·  $host"
+                })
+                popup.show()
+            }
+        })
+    }
+
+    private fun hideKeyboard() {
+        val imm = getSystemService(android.view.inputmethod.InputMethodManager::class.java)
+        imm?.hideSoftInputFromWindow(binding.urlEditText.windowToken, 0)
+    }
+
+    /** 程序化设置地址栏文本：抑制联想弹窗（联想只响应用户输入） */
+    private fun setAddressBarText(text: String) {
+        suppressSuggestOnce = true
+        binding.urlEditText.setText(text)
+    }
+
     private fun loadUrl(url: String) {
         val trimmed = url.trim()
         if (trimmed.isBlank()) return
@@ -1446,7 +1690,7 @@ class MainActivity : AppCompatActivity() {
 
         Log.i(logTag, "loadUrl: $trimmed")
         currentWebView.loadUrl(trimmed)
-        binding.urlEditText.setText(trimmed)
+        setAddressBarText(trimmed)
         updateBookmarkIcon()
         val target = currentWebViewSafe()
         binding.webView.postDelayed({ target?.let { runMixedContentFixThrottled(it) } }, 1500)
@@ -1495,9 +1739,12 @@ class MainActivity : AppCompatActivity() {
             val hasScheme = input.startsWith("http://") || input.startsWith("https://")
             return if (hasScheme) input else "https://$input"
         }
-        val encoded = URLEncoder.encode(input, Charsets.UTF_8.name())
-        return "https://www.google.com/search?q=$encoded"
+        return SearchEngines.byId(AppPrefs.getSearchEngineId(this)).buildQueryUrl(input)
     }
+
+    /** 主页：设置页可自定义，未配置时用默认主页 */
+    private fun homeUrl(): String =
+        AppPrefs.getHomePage(this) ?: DEFAULT_HOME_URL
 
     private fun applyControlsVisibility() {
         val hide = AppPrefs.getHideControls(this)
@@ -1564,6 +1811,11 @@ class MainActivity : AppCompatActivity() {
     private fun showMoreMenu() {
         val menu = PopupMenu(this, binding.moreButton)
         menu.menuInflater.inflate(R.menu.menu_more, menu.menu)
+        // 桌面版菜单项带状态标题
+        val desktopOn = tabDesktopMode[tabManager.currentId] ?: false
+        menu.menu.findItem(R.id.menu_desktop_ua)?.setTitle(
+            if (desktopOn) R.string.menu_mobile_ua else R.string.menu_desktop_ua
+        )
         menu.setOnMenuItemClickListener { item ->
             when (item.itemId) {
                 R.id.menu_new_tab -> {
@@ -1578,16 +1830,28 @@ class MainActivity : AppCompatActivity() {
                     showIdentityDialog()
                     true
                 }
-                R.id.menu_open_bookmarks -> {
-                    startActivity(Intent(this, BookmarksActivity::class.java))
-                    true
-                }
                 R.id.menu_strip_overlay -> {
                     stripOverlayAds()
                     true
                 }
-                R.id.menu_settings -> {
-                    startActivity(Intent(this, SettingsActivity::class.java))
+                R.id.menu_history -> {
+                    startActivity(Intent(this, HistoryActivity::class.java))
+                    true
+                }
+                R.id.menu_find_in_page -> {
+                    showFindBar()
+                    true
+                }
+                R.id.menu_desktop_ua -> {
+                    toggleDesktopUa()
+                    true
+                }
+                R.id.menu_qr_page -> {
+                    showPageQrCode()
+                    true
+                }
+                R.id.menu_open_bookmarks -> {
+                    startActivity(Intent(this, BookmarksActivity::class.java))
                     true
                 }
                 R.id.menu_copy_link -> {
@@ -1596,6 +1860,10 @@ class MainActivity : AppCompatActivity() {
                 }
                 R.id.menu_share -> {
                     shareCurrentUrl()
+                    true
+                }
+                R.id.menu_settings -> {
+                    startActivity(Intent(this, SettingsActivity::class.java))
                     true
                 }
                 else -> false
@@ -2556,7 +2824,9 @@ class MainActivity : AppCompatActivity() {
     }
 
     private companion object {
-        const val HOME_URL = "https://www.jiandaoyun.com/"
+        const val DEFAULT_HOME_URL = "https://www.jiandaoyun.com/"
+        const val MOBILE_USER_AGENT = "Mozilla/5.0 (Linux; Android 14; Mobile) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.6099.144 Mobile Safari/537.36"
+        const val DESKTOP_USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
         /** intent extra：目标身份序号（int，1 起始）。桌面"身份快捷方式"携带 */
         const val EXTRA_IDENTITY = "extra_identity"
         const val SNIFF_POOL_LIMIT = 120

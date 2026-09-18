@@ -96,6 +96,7 @@ class SettingsActivity : AppCompatActivity() {
         }
 
         setupAdBlock()
+        setupBrowsePrefs()
         setupTabs()
         setupAsrManage()
         setupDownloadManage()
@@ -111,6 +112,127 @@ class SettingsActivity : AppCompatActivity() {
     override fun onResume() {
         super.onResume()
         refreshAdBlockStatus()
+    }
+
+    // ---------- 搜索/主页/浏览体验/隐私（F-15） ----------
+    private fun setupBrowsePrefs() {
+        binding.searchEngineRow.setOnClickListener { showSearchEngineDialog() }
+        binding.homePageRow.setOnClickListener { showHomePageDialog() }
+        binding.dataSaverSwitch.isChecked = AppPrefs.isDataSaver(this)
+        binding.dataSaverSwitch.setOnCheckedChangeListener { _, isChecked ->
+            AppPrefs.setDataSaver(this, isChecked)
+        }
+        binding.textZoomRow.setOnClickListener { showTextZoomDialog() }
+        binding.clearBrowsingRow.setOnClickListener { showClearBrowsingDialog() }
+        refreshBrowsePrefs()
+    }
+
+    private fun refreshBrowsePrefs() {
+        val engine = com.trae.simplebrowser.core.SearchEngines.byId(AppPrefs.getSearchEngineId(this))
+        binding.searchEngineStatusTextView.text =
+            getString(R.string.setting_search_engine_fmt, engine.name)
+        val home = AppPrefs.getHomePage(this) ?: getString(R.string.setting_home_page_default)
+        binding.homePageStatusTextView.text = getString(R.string.setting_home_page_fmt, home)
+        binding.textZoomStatusTextView.text =
+            getString(R.string.setting_text_zoom_fmt, AppPrefs.getTextZoom(this))
+    }
+
+    private fun showSearchEngineDialog() {
+        val engines = com.trae.simplebrowser.core.SearchEngines.ALL
+        val names = engines.map { it.name }.toTypedArray()
+        val checked = engines.indexOfFirst { it.id == AppPrefs.getSearchEngineId(this) }
+        AlertDialog.Builder(this)
+            .setTitle(R.string.setting_search_engine)
+            .setSingleChoiceItems(names, checked) { dialog, which ->
+                AppPrefs.setSearchEngineId(this, engines[which].id)
+                dialog.dismiss()
+                refreshBrowsePrefs()
+            }
+            .setNegativeButton(android.R.string.cancel, null)
+            .show()
+    }
+
+    private fun showHomePageDialog() {
+        val input = EditText(this).apply {
+            hint = getString(R.string.setting_home_page_hint)
+            isSingleLine = true
+            setText(AppPrefs.getHomePage(this@SettingsActivity).orEmpty())
+        }
+        AlertDialog.Builder(this)
+            .setTitle(R.string.setting_home_page)
+            .setView(input)
+            .setPositiveButton(android.R.string.ok) { _, _ ->
+                val url = input.text?.toString()?.trim().orEmpty()
+                val normalized = when {
+                    url.isEmpty() -> ""
+                    url.startsWith("http://") || url.startsWith("https://") -> url
+                    else -> "https://$url"
+                }
+                AppPrefs.setHomePage(this, normalized)
+                refreshBrowsePrefs()
+            }
+            .setNegativeButton(android.R.string.cancel, null)
+            .show()
+    }
+
+    private fun showTextZoomDialog() {
+        val options = listOf(85, 100, 115, 130)
+        val labels = options.map { "$it%" }.toTypedArray()
+        val checked = options.indexOf(AppPrefs.getTextZoom(this)).coerceAtLeast(0)
+        AlertDialog.Builder(this)
+            .setTitle(R.string.setting_text_zoom)
+            .setSingleChoiceItems(labels, checked) { dialog, which ->
+                AppPrefs.setTextZoom(this, options[which])
+                dialog.dismiss()
+                refreshBrowsePrefs()
+            }
+            .setNegativeButton(android.R.string.cancel, null)
+            .show()
+    }
+
+    private fun showClearBrowsingDialog() {
+        val container = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp2(20), dp2(8), dp2(20), dp2(4))
+        }
+        val cacheBox = CheckBox(this).apply { text = getString(R.string.setting_clear_cache); isChecked = true }
+        val historyBox = CheckBox(this).apply { text = getString(R.string.setting_clear_history); isChecked = true }
+        val cookieBox = CheckBox(this).apply { text = getString(R.string.setting_clear_cookies) }
+        container.addView(cacheBox)
+        container.addView(historyBox)
+        container.addView(cookieBox)
+
+        AlertDialog.Builder(this)
+            .setTitle(R.string.setting_clear_browsing)
+            .setView(container)
+            .setPositiveButton(android.R.string.ok) { _, _ ->
+                if (!cacheBox.isChecked && !historyBox.isChecked && !cookieBox.isChecked) {
+                    Toast.makeText(this, R.string.setting_clear_none, Toast.LENGTH_SHORT).show()
+                    return@setPositiveButton
+                }
+                if (historyBox.isChecked) AppPrefs.clearHistory(this)
+                if (cacheBox.isChecked) AppPrefs.markPendingClearCache(this)
+                if (cookieBox.isChecked) clearAllCookies()
+                if (!cacheBox.isChecked) {
+                    Toast.makeText(this, R.string.setting_clear_done, Toast.LENGTH_SHORT).show()
+                }
+                // 缓存清理在回主窗口 onResume 执行，完成时有 Toast 提示
+            }
+            .setNegativeButton(android.R.string.cancel, null)
+            .show()
+    }
+
+    private fun clearAllCookies() {
+        // 清默认身份 + 全部命名身份的 Cookie（登出所有身份）
+        runCatching { android.webkit.CookieManager.getInstance().removeAllCookies(null) }
+        val count = AppPrefs.getIdentityCount(this)
+        for (i in 1..count) {
+            runCatching {
+                com.trae.simplebrowser.core.ProfileManager
+                    .cookieManager(com.trae.simplebrowser.core.ProfileManager.profileNameOf(i))
+                    .removeAllCookies(null)
+            }
+        }
     }
 
     // ---------- 广告拦截设置（F-14） ----------

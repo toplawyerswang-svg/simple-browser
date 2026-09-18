@@ -243,4 +243,42 @@
     <string name="setting_adblock_whitelist_hint">输入域名，如 example.com</string>
     <string name="setting_adblock_enabled_on">广告拦截已开启</string>
     <string name="setting_adblock_enabled_off">广告拦截已关闭</string>
+
+    <!-- 浏览体验增强（F-15） -->
+    <string name="menu_history">浏览历史</string>
+    <string name="history_title">浏览历史</string>
+    <string name="history_clear">清空历史</string>
+    <string name="history_clear_confirm">将删除全部浏览历史，确定吗？</string>
+    <string name="history_empty">暂无浏览历史</string>
+    <string name="history_removed">已删除该条记录</string>
+    <string name="menu_desktop_ua">以桌面版网站打开</string>
+    <string name="menu_mobile_ua">以手机版网站打开</string>
+    <string name="toast_desktop_ua_on">已切换为桌面版网站</string>
+    <string name="toast_desktop_ua_off">已切换为手机版网站</string>
+    <string name="menu_find_in_page">网页内查找</string>
+    <string name="find_hint">查找内容</string>
+    <string name="find_count_fmt">%1$d/%2$d</string>
+    <string name="menu_qr_page">当前页二维码</string>
+    <string name="qr_page_title">当前页面二维码</string>
+    <string name="toast_qr_failed">二维码生成失败</string>
+    <string name="setting_section_search">搜索与主页</string>
+    <string name="setting_search_engine">默认搜索引擎</string>
+    <string name="setting_search_engine_fmt">当前：%1$s</string>
+    <string name="setting_home_page">主页设置</string>
+    <string name="setting_home_page_fmt">当前：%1$s</string>
+    <string name="setting_home_page_hint">输入主页网址，如 https://hao123.com</string>
+    <string name="setting_home_page_default">默认主页（简道云）</string>
+    <string name="setting_section_browse">浏览体验</string>
+    <string name="setting_data_saver">无图模式（省流量）</string>
+    <string name="setting_data_saver_hint">开启后网页不加载图片，刷新生效</string>
+    <string name="setting_text_zoom">网页字体大小</string>
+    <string name="setting_text_zoom_fmt">当前：%1$d%%</string>
+    <string name="setting_section_privacy">隐私</string>
+    <string name="setting_clear_browsing">清理浏览数据</string>
+    <string name="setting_clear_cache">缓存文件</string>
+    <string name="setting_clear_history">浏览历史</string>
+    <string name="setting_clear_cookies">Cookie（将退出全部身份的登录）</string>
+    <string name="setting_clear_none">请至少选择一项</string>
+    <string name="setting_clear_done">清理完成</string>
+    <string name="toast_cache_cleared">网页缓存已清理</string>
 </resources>

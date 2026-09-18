@@ -3,14 +3,26 @@
         android:id="@+id/menu_new_tab"
         android:title="@string/tab_new" />
     <item
+        android:id="@+id/menu_history"
+        android:title="@string/menu_history" />
+    <item
         android:id="@+id/menu_add_to_home"
         android:title="@string/menu_add_to_home" />
     <item
         android:id="@+id/menu_identity"
         android:title="@string/menu_identity" />
     <item
+        android:id="@+id/menu_desktop_ua"
+        android:title="@string/menu_desktop_ua" />
+    <item
+        android:id="@+id/menu_find_in_page"
+        android:title="@string/menu_find_in_page" />
+    <item
         android:id="@+id/menu_strip_overlay"
         android:title="@string/menu_strip_overlay" />
+    <item
+        android:id="@+id/menu_qr_page"
+        android:title="@string/menu_qr_page" />
     <item
         android:id="@+id/menu_open_bookmarks"
         android:title="@string/menu_open_bookmarks" />

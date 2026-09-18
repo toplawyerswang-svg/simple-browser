@@ -107,6 +107,120 @@
                     android:textAppearance="?attr/textAppearanceBody2"
                     android:textColor="#666666" />
 
+                <!-- 搜索与主页（F-15） -->
+                <TextView
+                    android:id="@+id/searchSectionTitle"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="20dp"
+                    android:text="@string/setting_section_search"
+                    android:textAppearance="?attr/textAppearanceSubtitle2"
+                    android:textColor="#1565C0" />
+
+                <TextView
+                    android:id="@+id/searchEngineRow"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="12dp"
+                    android:background="?attr/selectableItemBackground"
+                    android:paddingTop="10dp"
+                    android:paddingBottom="10dp"
+                    android:text="@string/setting_search_engine"
+                    android:textAppearance="?attr/textAppearanceListItem" />
+
+                <TextView
+                    android:id="@+id/searchEngineStatusTextView"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="2dp"
+                    android:textAppearance="?attr/textAppearanceBody2"
+                    android:textColor="#666666" />
+
+                <TextView
+                    android:id="@+id/homePageRow"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="12dp"
+                    android:background="?attr/selectableItemBackground"
+                    android:paddingTop="10dp"
+                    android:paddingBottom="10dp"
+                    android:text="@string/setting_home_page"
+                    android:textAppearance="?attr/textAppearanceListItem" />
+
+                <TextView
+                    android:id="@+id/homePageStatusTextView"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="2dp"
+                    android:textAppearance="?attr/textAppearanceBody2"
+                    android:textColor="#666666" />
+
+                <!-- 浏览体验（F-15） -->
+                <TextView
+                    android:id="@+id/browseSectionTitle"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="20dp"
+                    android:text="@string/setting_section_browse"
+                    android:textAppearance="?attr/textAppearanceSubtitle2"
+                    android:textColor="#1565C0" />
+
+                <androidx.appcompat.widget.SwitchCompat
+                    android:id="@+id/dataSaverSwitch"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="8dp"
+                    android:text="@string/setting_data_saver" />
+
+                <TextView
+                    android:id="@+id/dataSaverHintTextView"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="2dp"
+                    android:text="@string/setting_data_saver_hint"
+                    android:textAppearance="?attr/textAppearanceBody2"
+                    android:textColor="#999999" />
+
+                <TextView
+                    android:id="@+id/textZoomRow"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="12dp"
+                    android:background="?attr/selectableItemBackground"
+                    android:paddingTop="10dp"
+                    android:paddingBottom="10dp"
+                    android:text="@string/setting_text_zoom"
+                    android:textAppearance="?attr/textAppearanceListItem" />
+
+                <TextView
+                    android:id="@+id/textZoomStatusTextView"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="2dp"
+                    android:textAppearance="?attr/textAppearanceBody2"
+                    android:textColor="#666666" />
+
+                <!-- 隐私（F-15） -->
+                <TextView
+                    android:id="@+id/privacySectionTitle"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="20dp"
+                    android:text="@string/setting_section_privacy"
+                    android:textAppearance="?attr/textAppearanceSubtitle2"
+                    android:textColor="#1565C0" />
+
+                <TextView
+                    android:id="@+id/clearBrowsingRow"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="12dp"
+                    android:background="?attr/selectableItemBackground"
+                    android:paddingTop="10dp"
+                    android:paddingBottom="10dp"
+                    android:text="@string/setting_clear_browsing"
+                    android:textAppearance="?attr/textAppearanceListItem" />
+
                 <LinearLayout
                     android:id="@+id/usageContainer"
                     android:layout_width="match_parent"
