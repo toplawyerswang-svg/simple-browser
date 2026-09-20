@@ -1022,7 +1022,9 @@ class SettingsActivity : AppCompatActivity() {
 
     private fun formatDate(ts: Long): String {
         if (ts <= 0) return ""
-        return SimpleDateFormat("MM-dd HH:mm", Locale.CHINA).format(Date(ts))
+        // 服务端 created_at 是秒级时间戳，小于 1e12 视为秒，避免被当毫秒格式化成 1970 年
+        val ms = if (ts < 10_000_000_000L) ts * 1000 else ts
+        return SimpleDateFormat("MM-dd HH:mm", Locale.CHINA).format(Date(ms))
     }
 
     private fun dp(v: Int): Int = (v * resources.displayMetrics.density).toInt()

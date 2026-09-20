@@ -138,7 +138,7 @@ object AsrShareFlow {
             } ?: throw IllegalStateException("无法读取分享的录音内容")
             if (local.length() == 0L) throw IllegalStateException("分享的录音内容为空")
 
-            val taskId = AsrClient.createTask(activity, local, opts) { pct ->
+            val taskId = AsrClient.createTask(activity, local, opts, displayName) { pct ->
                 report(activity, remaining, ordinal,
                     activity.getString(R.string.asr_progress_upload, pct), pct)
             }

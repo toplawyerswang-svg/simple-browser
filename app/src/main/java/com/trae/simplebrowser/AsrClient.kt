@@ -43,8 +43,10 @@ object AsrClient {
         return j.optString("user")
     }
 
-    /** 上传音频创建任务，返回 task_id；onProgress 回调上传进度 0..100。 */
-    fun createTask(context: Context, audio: File, opts: Options, onProgress: (Int) -> Unit): String {
+    /** 上传音频创建任务，返回 task_id；onProgress 回调上传进度 0..100。
+     *  displayName 为分享文件的原始名：服务端任务列表展示用它，不传则退回上传文件名。 */
+    fun createTask(context: Context, audio: File, opts: Options, displayName: String? = null,
+                   onProgress: (Int) -> Unit): String {
         val token = token(context)
         val boundary = "lzbr" + System.currentTimeMillis()
         val conn = (URL("$BASE_URL/task").openConnection() as HttpURLConnection).apply {
@@ -80,6 +82,14 @@ object AsrClient {
                 }
             }
             text("\r\n--$boundary\r\n")
+            // 原始文件名单独走表单字段：上传临时名无意义，扩展名才供服务端识别格式
+            if (!displayName.isNullOrBlank()) {
+                text("Content-Disposition: form-data; name=\"display_name\"\r\n")
+                text("Content-Type: text/plain; charset=utf-8\r\n\r\n")
+                text(displayName.trim().replace(Regex("[\\p{Cntrl}]"), "").take(200))
+                text("\r\n")
+            }
+            text("--$boundary\r\n")
             text("Content-Disposition: form-data; name=\"options\"\r\n")
             text("Content-Type: application/json\r\n\r\n")
             text(opts.toJson())
