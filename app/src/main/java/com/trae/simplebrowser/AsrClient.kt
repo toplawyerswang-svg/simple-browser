@@ -27,6 +27,17 @@ object AsrClient {
             put("diarize", diarize)
             put("dialect2mandarin", dialect2mandarin)
         }.toString()
+
+        companion object {
+            fun fromJson(json: String): Options = JSONObject(json).let {
+                Options(
+                    transcribe = it.optBoolean("transcribe", true),
+                    timestamps = it.optBoolean("timestamps", true),
+                    diarize = it.optBoolean("diarize", true),
+                    dialect2mandarin = it.optBoolean("dialect2mandarin", false)
+                )
+            }
+        }
     }
 
     data class ShareInfo(

@@ -643,6 +643,9 @@ class MainActivity : AppCompatActivity() {
         super.onResume()
         applyControlsVisibility()
         updateBookmarkIcon()
+        // 转写批次在服务里跑：页面回前台时补展示后台完成的结果/失败汇总
+        AsrShareFlow.activityResumed = true
+        AsrShareFlow.drainPending(this)
         // 仅恢复当前标签的渲染与计时器；后台标签保持暂停
         currentWebView.onResume()
         currentWebView.resumeTimers()
@@ -660,6 +663,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     override fun onPause() {
+        AsrShareFlow.activityResumed = false
         // 全局暂停所有标签的计时器与布局
         tabWebViews.values.forEach { it.onPause() }
         currentWebViewSafe()?.pauseTimers()

@@ -40,8 +40,10 @@
     <string name="asr_progress_copy">正在读取分享的音视频…</string>
     <string name="asr_progress_upload">正在上传 %d%%</string>
     <string name="asr_progress_stage_recognizing">识别中，可先返回浏览</string>
+    <string name="asr_progress_preparing">正在准备处理…</string>
     <string name="asr_pill_batch_fmt">[%1$d/%2$d] %3$s</string>
     <string name="asr_failed_prefix">处理失败：</string>
+    <string name="asr_batch_failed_list_fmt">以下 %1$d 个文件转写失败：\n\n%2$s</string>
     <string name="asr_batch_summary_fmt">共处理 %1$d 个文件：成功 %2$d 个，失败 %3$d 个\n\n%4$s</string>
     <string name="asr_notif_channel_progress">音视频转写进度</string>
     <string name="asr_notif_channel_result">音视频转写结果</string>

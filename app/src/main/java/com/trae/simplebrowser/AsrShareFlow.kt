@@ -3,8 +3,10 @@ package com.trae.simplebrowser
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
+import android.app.Service
 import android.content.Context
 import android.content.Intent
+import android.content.pm.ServiceInfo
 import android.net.Uri
 import android.os.Build
 import android.provider.OpenableColumns
@@ -17,10 +19,13 @@ import androidx.core.app.NotificationCompat
 import androidx.core.app.NotificationManagerCompat
 import org.json.JSONObject
 import java.io.File
+import java.lang.ref.WeakReference
 
-/** 录音分享处理流程：多选处理项 → 上传 ECS asrsvc → 轮询 → 结果页。
+/** 录音分享处理流程：多选处理项 → 前台服务上传 ECS asrsvc → 轮询 → 结果页。
  *  支持一次分享多个音视频文件（选项确认一次后逐个排队处理）；
- *  进度走工具栏上方悬浮条与系统通知，不弹居中对话框阻断浏览。 */
+ *  实际处理跑在 AsrProcessingService（dataSync 前台服务）里，切后台不被掐网中断；
+ *  进度走工具栏上方悬浮条与系统通知，不弹居中对话框阻断浏览。
+ *  页面不在前台时完成的结果先排队，MainActivity 回前台时 drainPending 统一展示。 */
 object AsrShareFlow {
     private const val TAG = "LiteBrowser"
     private const val POLL_INTERVAL_MS = 5000L
@@ -30,12 +35,24 @@ object AsrShareFlow {
     private const val NOTIF_ID_PROGRESS = 2001
     private const val NOTIF_ID_RESULT = 2002
     private var lastNotifyAt = 0L
+    private var lastSuccessName: String? = null
 
     /** 一个待处理的音视频分享项：uri 与其 MIME（用于确定上传扩展名）。 */
     data class MediaItem(val uri: Uri, val mime: String)
 
     private class Success(val resultFile: File, val displayName: String, val taskId: String,
                           val options: JSONObject?)
+
+    /** 处理选项页所在的页面引用：悬浮条与直接展示结果用；页面销毁后由队列兜底。 */
+    private var uiRef = WeakReference<MainActivity>(null)
+
+    /** MainActivity 是否处于前台（onResume/onPause 维护）。 */
+    @Volatile
+    var activityResumed = false
+
+    /** 页面不在前台期间完成的转写结果与失败项，回前台时统一展示。 */
+    private val pendingResults = ArrayDeque<Success>()
+    private val pendingFailures = ArrayDeque<String>()
 
     /** 已知音视频扩展名到 MIME 的映射：发送方不标类型时按显示名兜底识别。 */
     private val EXT_MIME = mapOf(
@@ -58,6 +75,7 @@ object AsrShareFlow {
     }
 
     fun offerAudioProcessing(activity: MainActivity, items: List<MediaItem>) {
+        uiRef = WeakReference(activity)
         // 音频识别功能需要有效令牌：无令牌先弹输入框，ECS 核验通过后才进入处理选项
         AsrAuth.ensureVerified(activity) { showOptions(activity, items) }
     }
@@ -84,51 +102,155 @@ object AsrShareFlow {
                     dialect2mandarin = checked[3]
                 )
                 Toast.makeText(activity, R.string.asr_toast_started, Toast.LENGTH_SHORT).show()
-                Thread { processAll(activity, items, opts, mutableListOf(), mutableListOf()) }.start()
+                AsrProcessingService.start(activity, items, opts)
             }
             .show()
     }
 
-    /** 逐个处理分享的音视频（递归推进队列）；令牌失效时重新核验后从中断处继续。
-     *  全部结束后统一打开结果页并汇总失败项。 */
-    private fun processAll(activity: MainActivity, items: List<MediaItem>, opts: AsrClient.Options,
-                           successes: MutableList<Success>, failures: MutableList<String>) {
+    /** 处理整批分享的音视频（在服务的工作线程上逐个推进）。 */
+    fun runBatch(context: Context, items: List<MediaItem>, opts: AsrClient.Options) {
+        runBatch(context, items, opts, done = 0, failed = 0)
+    }
+
+    /** 递归推进队列；done/failed 是本批次已完成的计数，令牌失效时重新核验后从中断处继续。 */
+    private fun runBatch(context: Context, items: List<MediaItem>, opts: AsrClient.Options,
+                         done: Int, failed: Int) {
         if (items.isEmpty()) {
-            finishBatch(activity, successes, failures)
+            finishBatch(context, done, failed)
             return
         }
         val item = items.first()
-        val remaining = items.size
-        val ordinal = successes.size + failures.size + 1
+        val rest = items.drop(1)
+        val ordinal = done + failed + 1
         try {
-            successes.add(processOne(activity, item, opts, remaining, ordinal))
+            deliverResult(processOne(context, item, opts, items.size, ordinal))
+            runBatch(context, rest, opts, done + 1, failed)
         } catch (e: AsrAuthException) {
             // 令牌失效：清除后弹输入框重新核验，通过后继续当前文件及余下文件
-            AppPrefs.clearAsrAuth(activity)
+            AppPrefs.clearAsrAuth(context)
+            val activity = uiRef.get()
+            if (activity == null || activity.isFinishing) {
+                // 页面已不在，无法重新核验：本项记为失败，继续余下文件
+                recordFailure(describe(context, item, e))
+                runBatch(context, rest, opts, done, failed + 1)
+                return
+            }
             AsrAuth.promptTokenInput(activity) {
                 Thread {
                     try {
-                        successes.add(processOne(activity, item, opts, remaining, ordinal))
+                        deliverResult(processOne(context, item, opts, items.size, ordinal))
+                        runBatch(context, rest, opts, done + 1, failed)
                     } catch (retry: Exception) {
                         Log.e(TAG, "asr process failed", retry)
-                        failures.add(describe(activity, item, retry))
+                        recordFailure(describe(context, item, retry))
+                        runBatch(context, rest, opts, done, failed + 1)
                     }
-                    processAll(activity, items.drop(1), opts, successes, failures)
                 }.start()
             }
             return
         } catch (e: Exception) {
             Log.e(TAG, "asr process failed", e)
-            failures.add(describe(activity, item, e))
+            recordFailure(describe(context, item, e))
+            runBatch(context, rest, opts, done, failed + 1)
         }
-        processAll(activity, items.drop(1), opts, successes, failures)
+    }
+
+    /** 处理完成的一项：页面在前台直接打开结果页，否则排队等回前台。 */
+    private fun deliverResult(s: Success) {
+        val activity = uiRef.get()
+        if (activityResumed && activity != null && !activity.isFinishing) {
+            openResult(activity, s)
+        } else {
+            synchronized(pendingResults) { pendingResults.add(s) }
+        }
+    }
+
+    private fun recordFailure(detail: String) {
+        synchronized(pendingFailures) { pendingFailures.add(detail) }
+    }
+
+    private fun consumeFailures(): List<String> = synchronized(pendingFailures) {
+        val list = pendingFailures.toList()
+        pendingFailures.clear()
+        list
+    }
+
+    /** 批次收尾：隐藏悬浮条、发完成通知；失败项前台直接弹汇总，否则留在队列等回前台。 */
+    private fun finishBatch(context: Context, done: Int, failed: Int) {
+        uiRef.get()?.let { activity ->
+            fireUi(activity) {
+                activity.findViewById<TextView>(R.id.asrProgressPill)?.visibility = View.GONE
+            }
+        }
+        runCatching { NotificationManagerCompat.from(context).cancel(NOTIF_ID_PROGRESS) }
+        if (done > 0) {
+            postResultNotification(context, done, lastSuccessName)
+        }
+        if (failed > 0) {
+            val activity = uiRef.get()
+            if (activityResumed && activity != null && !activity.isFinishing) {
+                val failures = consumeFailures()
+                if (failures.isNotEmpty()) showFailureSummary(activity, failures)
+            }
+        }
+    }
+
+    /** MainActivity 回前台时调用：把后台期间完成的结果页打开、失败项弹汇总。 */
+    fun drainPending(activity: MainActivity) {
+        val results = synchronized(pendingResults) {
+            val list = pendingResults.toList()
+            pendingResults.clear()
+            list
+        }
+        for (s in results) openResult(activity, s)
+        if (failuresVisibleAt(activity)) {
+            val failures = consumeFailures()
+            if (failures.isNotEmpty()) showFailureSummary(activity, failures)
+        }
+    }
+
+    private fun failuresVisibleAt(activity: MainActivity): Boolean =
+        activityResumed && !activity.isFinishing
+
+    private fun showFailureSummary(activity: MainActivity, failures: List<String>) {
+        fireUi(activity) {
+            if (activity.isFinishing) return@fireUi
+            val message = if (failures.size == 1) {
+                activity.getString(R.string.asr_failed_prefix) + failures[0]
+            } else {
+                activity.getString(R.string.asr_batch_failed_list_fmt, failures.size,
+                    failures.joinToString("\n"))
+            }
+            AlertDialog.Builder(activity)
+                .setTitle(R.string.asr_progress_title)
+                .setMessage(message)
+                .setPositiveButton(android.R.string.ok, null)
+                .show()
+        }
+    }
+
+    /** 进度上报：悬浮条必更新；系统通知仅在通知权限开启时发（该权限被拒则静默跳过）。 */
+    private fun report(context: Context, remaining: Int, ordinal: Int, stage: String, pct: Int = -1) {
+        val total = ordinal + remaining - 1
+        val label = if (total > 1) {
+            context.getString(R.string.asr_pill_batch_fmt, ordinal, total, stage)
+        } else stage
+        uiRef.get()?.let { activity ->
+            fireUi(activity) {
+                activity.findViewById<TextView>(R.id.asrProgressPill)?.apply {
+                    text = label
+                    visibility = View.VISIBLE
+                }
+            }
+        }
+        postProgress(context, label, pct)
     }
 
     /** 处理单个文件：拷贝到缓存 → 上传建任务 → 轮询至完成。失败抛异常。 */
-    private fun processOne(activity: MainActivity, item: MediaItem, opts: AsrClient.Options,
+    private fun processOne(context: Context, item: MediaItem, opts: AsrClient.Options,
                            remaining: Int, ordinal: Int): Success {
-        val appCtx = activity.applicationContext
-        report(activity, remaining, ordinal, activity.getString(R.string.asr_progress_copy))
+        val appCtx = context.applicationContext
+        report(appCtx, remaining, ordinal, appCtx.getString(R.string.asr_progress_copy))
         val displayName = queryDisplayName(appCtx, item.uri)
         val local = File(appCtx.cacheDir,
             "asr_upload_${System.currentTimeMillis()}${resolveExt(displayName, item.mime)}")
@@ -138,25 +260,25 @@ object AsrShareFlow {
             } ?: throw IllegalStateException("无法读取分享的录音内容")
             if (local.length() == 0L) throw IllegalStateException("分享的录音内容为空")
 
-            val taskId = AsrClient.createTask(activity, local, opts, displayName) { pct ->
-                report(activity, remaining, ordinal,
-                    activity.getString(R.string.asr_progress_upload, pct), pct)
+            val taskId = AsrClient.createTask(appCtx, local, opts, displayName) { pct ->
+                report(appCtx, remaining, ordinal,
+                    appCtx.getString(R.string.asr_progress_upload, pct), pct)
             }
             Log.i(TAG, "asr task created: $taskId")
 
-            report(activity, remaining, ordinal,
-                activity.getString(R.string.asr_progress_stage_recognizing))
+            report(appCtx, remaining, ordinal, appCtx.getString(R.string.asr_progress_stage_recognizing))
             val deadline = System.currentTimeMillis() + POLL_MAX_MS
             while (System.currentTimeMillis() < deadline) {
                 Thread.sleep(POLL_INTERVAL_MS)
-                val task = AsrClient.getTask(activity, taskId)
+                val task = AsrClient.getTask(appCtx, taskId)
                 val status = task.optString("status")
                 val stage = task.optString("stage")
-                if (stage.isNotEmpty()) report(activity, remaining, ordinal, stage)
+                if (stage.isNotEmpty()) report(appCtx, remaining, ordinal, stage)
                 when (status) {
                     "SUCCEEDED" -> {
                         val resultFile = File(appCtx.cacheDir, "asr_result_$taskId.json")
                         resultFile.writeText(task.getJSONObject("result").toString(), Charsets.UTF_8)
+                        lastSuccessName = displayName ?: task.optString("filename")
                         return Success(resultFile, displayName ?: task.optString("filename"),
                             taskId, task.optJSONObject("options"))
                     }
@@ -167,54 +289,6 @@ object AsrShareFlow {
         } finally {
             local.delete()
         }
-    }
-
-    /** 批次收尾：隐藏悬浮条、发完成通知、按顺序打开结果页，失败项弹一次汇总。 */
-    private fun finishBatch(activity: MainActivity, successes: List<Success>,
-                            failures: List<String>) {
-        fireUi(activity) {
-            activity.findViewById<TextView>(R.id.asrProgressPill)?.visibility = View.GONE
-        }
-        runCatching { NotificationManagerCompat.from(activity).cancel(NOTIF_ID_PROGRESS) }
-        if (successes.isNotEmpty()) {
-            // 依处理顺序叠加打开结果页，返回键可依次回看每份结果
-            for (s in successes) openResult(activity, s)
-        }
-        postResultNotification(activity, successes.size,
-            successes.firstOrNull()?.displayName)
-        if (failures.isNotEmpty()) {
-            fireUi(activity) {
-                if (activity.isFinishing) return@fireUi
-                val message = if (successes.isEmpty() && failures.size == 1) {
-                    activity.getString(R.string.asr_failed_prefix) + failures[0]
-                } else {
-                    activity.getString(R.string.asr_batch_summary_fmt,
-                        successes.size + failures.size, successes.size, failures.size,
-                        failures.joinToString("\n"))
-                }
-                AlertDialog.Builder(activity)
-                    .setTitle(R.string.asr_progress_title)
-                    .setMessage(message)
-                    .setPositiveButton(android.R.string.ok, null)
-                    .show()
-            }
-        }
-    }
-
-    /** 进度上报：悬浮条必更新；系统通知仅在通知权限开启时发（该权限被拒则静默跳过）。 */
-    private fun report(activity: MainActivity, remaining: Int, ordinal: Int,
-                       stage: String, pct: Int = -1) {
-        val total = ordinal + remaining - 1
-        val label = if (total > 1) {
-            activity.getString(R.string.asr_pill_batch_fmt, ordinal, total, stage)
-        } else stage
-        fireUi(activity) {
-            activity.findViewById<TextView>(R.id.asrProgressPill)?.apply {
-                text = label
-                visibility = View.VISIBLE
-            }
-        }
-        postProgress(activity, label, pct)
     }
 
     private fun postProgress(context: Context, text: String, pct: Int) {
@@ -228,7 +302,7 @@ object AsrShareFlow {
             .setSmallIcon(R.drawable.ic_stat_transcribe)
             .setContentTitle(context.getString(R.string.asr_notif_title))
             .setContentText(text)
-            .setProgress(100, pct.coerceAtLeast(0), pct !in 0..100)
+            .setProgress(100, pct.coerceAtLeast(0), pct != 100)
             .setOngoing(true)
             .setOnlyAlertOnce(true)
             .build()
@@ -274,6 +348,32 @@ object AsrShareFlow {
                 NotificationManager.IMPORTANCE_DEFAULT))
     }
 
+    /** 前台服务入口通知：IMPORTANCE_LOW + 静默更新，不让进度通知打扰。 */
+    fun startForeground(service: Service) {
+        ensureChannels(service)
+        val notification = progressNotification(service)
+        if (Build.VERSION.SDK_INT >= 29) {
+            service.startForeground(NOTIF_ID_PROGRESS, notification,
+                ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC)
+        } else {
+            service.startForeground(NOTIF_ID_PROGRESS, notification)
+        }
+    }
+
+    fun stopForeground(service: Service) {
+        service.stopForeground(Service.STOP_FOREGROUND_REMOVE)
+    }
+
+    private fun progressNotification(context: Context) =
+        NotificationCompat.Builder(context, NOTIF_CHANNEL_PROGRESS)
+            .setSmallIcon(R.drawable.ic_stat_transcribe)
+            .setContentTitle(context.getString(R.string.asr_notif_title))
+            .setContentText(context.getString(R.string.asr_progress_preparing))
+            .setProgress(100, 0, true)
+            .setOngoing(true)
+            .setOnlyAlertOnce(true)
+            .build()
+
     private fun openResult(activity: MainActivity, s: Success) {
         if (activity.isFinishing) return
         val it = Intent(activity, AsrResultActivity::class.java)
@@ -288,8 +388,8 @@ object AsrShareFlow {
         activity.startActivity(it)
     }
 
-    private fun describe(activity: MainActivity, item: MediaItem, e: Exception): String {
-        val name = queryDisplayName(activity.applicationContext, item.uri) ?: "音视频文件"
+    private fun describe(context: Context, item: MediaItem, e: Exception): String {
+        val name = queryDisplayName(context.applicationContext, item.uri) ?: "音视频文件"
         return "$name：${e.message ?: e.toString()}"
     }
 

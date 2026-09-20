@@ -57,6 +57,12 @@
             android:exported="false"
             android:foregroundServiceType="dataSync" />
 
+        <!-- 转写处理前台服务：保住切后台后的网络与进程，转写不被系统中断 -->
+        <service
+            android:name=".AsrProcessingService"
+            android:exported="false"
+            android:foregroundServiceType="dataSync" />
+
         <activity
             android:name=".MainActivity"
             android:exported="true"
