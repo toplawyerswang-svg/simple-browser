@@ -244,6 +244,28 @@
 
 </androidx.constraintlayout.widget.ConstraintLayout>
 
+    <!-- 转写进度悬浮条：贴在工具栏上方，纯展示不拦截触摸，不遮挡屏幕中心 -->
+    <TextView
+        android:id="@+id/asrProgressPill"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_marginBottom="12dp"
+        android:background="@drawable/bg_asr_pill"
+        android:elevation="6dp"
+        android:ellipsize="end"
+        android:gravity="center"
+        android:maxLines="1"
+        android:paddingStart="14dp"
+        android:paddingTop="6dp"
+        android:paddingEnd="14dp"
+        android:paddingBottom="6dp"
+        android:textColor="#FFFFFF"
+        android:textSize="12sp"
+        android:visibility="gone"
+        app:layout_constraintBottom_toTopOf="@+id/bottomContainer"
+        app:layout_constraintEnd_toEndOf="parent"
+        app:layout_constraintStart_toStartOf="parent" />
+
     <FrameLayout
         android:id="@+id/videoContainer"
         android:layout_width="match_parent"

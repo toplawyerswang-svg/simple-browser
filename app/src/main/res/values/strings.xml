@@ -39,7 +39,16 @@
     <string name="asr_progress_title">音视频处理中</string>
     <string name="asr_progress_copy">正在读取分享的音视频…</string>
     <string name="asr_progress_upload">正在上传 %d%%</string>
+    <string name="asr_progress_stage_recognizing">识别中，可先返回浏览</string>
+    <string name="asr_pill_batch_fmt">[%1$d/%2$d] %3$s</string>
     <string name="asr_failed_prefix">处理失败：</string>
+    <string name="asr_batch_summary_fmt">共处理 %1$d 个文件：成功 %2$d 个，失败 %3$d 个\n\n%4$s</string>
+    <string name="asr_notif_channel_progress">音视频转写进度</string>
+    <string name="asr_notif_channel_result">音视频转写结果</string>
+    <string name="asr_notif_title">音视频转写</string>
+    <string name="asr_notif_done_one">转写完成：%1$s</string>
+    <string name="asr_notif_done_multi">%1$d 个文件转写完成</string>
+    <string name="asr_notif_all_failed">转写失败</string>
     <string name="asr_result_title">转写结果</string>
     <string name="asr_result_missing">结果数据缺失</string>
     <string name="asr_result_empty">（无识别内容）</string>

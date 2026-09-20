@@ -491,21 +491,26 @@ class MainActivity : AppCompatActivity() {
         handleIncomingShare(intent)
     }
 
-    /** 接收外部分享（SEND / SEND_MULTIPLE）：音频走录音处理流程，其余本期仅提示已收到 */
+    /** 接收外部分享（SEND / SEND_MULTIPLE）：逐项识别出音视频文件后一并进入转写流程，
+     *  其余类型本期仅提示已收到 */
     private fun handleIncomingShare(intent: Intent?) {
         val action = intent?.action ?: return
         if (action != Intent.ACTION_SEND && action != Intent.ACTION_SEND_MULTIPLE) return
         val mime = intent.type.orEmpty()
-        val hasStream = intent.hasExtra(Intent.EXTRA_STREAM)
-        Log.i(logTag, "收到分享: action=$action mime=$mime hasStream=$hasStream")
-        if (action == Intent.ACTION_SEND && hasStream &&
-            (mime.startsWith("audio/") || mime.startsWith("video/"))) {
-            @Suppress("DEPRECATION")
-            val stream = intent.getParcelableExtra<Uri>(Intent.EXTRA_STREAM)
-            if (stream != null) {
-                AsrShareFlow.offerAudioProcessing(this, mime, stream)
-                return
-            }
+        Log.i(logTag, "收到分享: action=$action mime=$mime hasStream=${intent.hasExtra(Intent.EXTRA_STREAM)}")
+        @Suppress("DEPRECATION")
+        val streams: List<Uri> = when (action) {
+            Intent.ACTION_SEND -> listOfNotNull(intent.getParcelableExtra(Intent.EXTRA_STREAM))
+            else -> intent.getParcelableArrayListExtra<Uri>(Intent.EXTRA_STREAM)
+                ?: listOfNotNull(intent.getParcelableExtra(Intent.EXTRA_STREAM))
+        }
+        // 逐项核实音视频类型：微信多文件分享常把 intent 类型标成通配，不能只看 intent.mime
+        val mediaItems = streams.mapNotNull { uri ->
+            AsrShareFlow.resolveMediaMime(this, uri, mime)?.let { AsrShareFlow.MediaItem(uri, it) }
+        }
+        if (mediaItems.isNotEmpty()) {
+            AsrShareFlow.offerAudioProcessing(this, mediaItems)
+            return
         }
         Toast.makeText(this, R.string.share_received_toast, Toast.LENGTH_SHORT).show()
     }
