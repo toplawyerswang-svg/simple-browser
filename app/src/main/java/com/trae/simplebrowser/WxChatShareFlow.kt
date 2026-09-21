@@ -276,10 +276,12 @@ object WxChatShareFlow {
                     Toast.makeText(activity, R.string.asr_share_copied, Toast.LENGTH_SHORT).show()
                 }
                 .setNegativeButton(R.string.wxchat_btn_open) { _, _ ->
-                    // 回主页面加载分享页（onNewIntent 会 loadUrl）
+                    // 与设置页「结果」入口一致：独立任务打开（singleTask 复用会清掉
+                    // 其上的设置页导致返回不回列表），返回键回到来源页
                     activity.startActivity(
                         Intent(activity, MainActivity::class.java)
-                            .setFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP)
+                            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or
+                                Intent.FLAG_ACTIVITY_MULTIPLE_TASK)
                             .setData(Uri.parse(firstUrl)))
                 }
                 .setPositiveButton(R.string.wxchat_btn_share) { _, _ ->
