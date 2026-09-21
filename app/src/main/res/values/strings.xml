@@ -88,6 +88,8 @@
     <string name="wxchat_fill_note">填写后，这份与之后转存的聊天记录都会按真名展示；留空则保持昵称。</string>
     <string name="wxchat_fill_save">保存</string>
     <string name="wxchat_fill_skip">跳过</string>
+    <string name="wxchat_download_title">聊天记录附件</string>
+    <string name="wxchat_download_started">附件已转系统下载</string>
     <!-- 列表解析状态 -->
     <string name="wxchat_ocr_done">✓ 附件已解析完成，可在分享页查看解析结果</string>
     <string name="wxchat_ocr_pending">附件解析中，稍后刷新列表查看…</string>

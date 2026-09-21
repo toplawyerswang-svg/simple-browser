@@ -1,5 +1,6 @@
 package com.trae.simplebrowser
 
+import android.annotation.SuppressLint
 import android.app.DownloadManager
 import android.content.BroadcastReceiver
 import android.content.Context
@@ -15,6 +16,9 @@ import android.view.Gravity
 import android.view.LayoutInflater
 import android.view.View
 import android.view.ViewGroup
+import android.webkit.WebView
+import android.webkit.WebViewClient
+import android.widget.FrameLayout
 import android.widget.BaseAdapter
 import android.widget.Button
 import android.widget.CheckBox
@@ -770,14 +774,57 @@ class SettingsActivity : AppCompatActivity() {
         Toast.makeText(this, R.string.asr_share_copied, Toast.LENGTH_SHORT).show()
     }
 
-    /** 点击条目：在独立任务里打开分享页（singleTask 主页会清掉设置页，
-     *  MULTIPLE_TASK 让浏览页压在新任务上，返回键回到本页且标签状态保留）。 */
+    // ---------- 分享页内预览：BACK 关闭必回列表，不依赖任务栈 ----------
+
+    private var wxPreviewWebView: WebView? = null
+
+    /** 点击条目：在设置页内的全屏 WebView 打开分享页。
+     *  之前用独立任务启动主页——任务栈行为在部分系统上不可靠，返回会丢列表页；
+     *  页内预览的返回逻辑完全自己控制：BACK 关预览必回列表。 */
     private fun openWxShare(item: WxShareItem) {
-        startActivity(
-            Intent(this, MainActivity::class.java)
-                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_MULTIPLE_TASK)
-                .setData(Uri.parse(item.url)))
+        showWxPreview(item.url)
     }
+
+    @SuppressLint("SetJavaScriptEnabled")
+    private fun showWxPreview(url: String) {
+        val container = binding.wxPreviewContainer
+        val wv = wxPreviewWebView ?: WebView(this).also { wv ->
+            wv.settings.apply {
+                javaScriptEnabled = true
+                domStorageEnabled = true
+                useWideViewPort = true
+                loadWithOverviewMode = true
+            }
+            wv.webViewClient = WebViewClient()
+            // 附件下载交给系统下载器（分享页的「下载」链接）
+            wv.setDownloadListener { dlUrl, _, _, _, _ ->
+                runCatching {
+                    val req = android.app.DownloadManager.Request(Uri.parse(dlUrl))
+                        .setTitle(getString(R.string.wxchat_download_title))
+                        .setNotificationVisibility(
+                            android.app.DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED)
+                    (getSystemService(Context.DOWNLOAD_SERVICE)
+                        as android.app.DownloadManager).enqueue(req)
+                    Toast.makeText(this, R.string.wxchat_download_started, Toast.LENGTH_SHORT).show()
+                }.onFailure {
+                    startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(dlUrl)))
+                }
+            }
+            wxPreviewWebView = wv
+            container.addView(wv, FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
+        }
+        wv.loadUrl(url)
+        container.visibility = View.VISIBLE
+    }
+
+    private fun closeWxPreview() {
+        binding.wxPreviewContainer.visibility = View.GONE
+        wxPreviewWebView?.loadUrl("about:blank")  // 保留实例复用，清掉内容
+    }
+
+    private fun wxPreviewVisible(): Boolean =
+        binding.wxPreviewContainer.visibility == View.VISIBLE
 
     private fun confirmDeleteWxShare(item: WxShareItem) {
         AlertDialog.Builder(this)
@@ -1353,10 +1400,13 @@ class SettingsActivity : AppCompatActivity() {
 
     @Deprecated("Deprecated in Java")
     override fun onBackPressed() {
-        if (selectionMode) {
-            exitSelection()
-        } else {
-            super.onBackPressed()
+        when {
+            wxPreviewVisible() -> {
+                val wv = wxPreviewWebView
+                if (wv != null && wv.canGoBack()) wv.goBack() else closeWxPreview()
+            }
+            selectionMode -> exitSelection()
+            else -> super.onBackPressed()
         }
     }
 
