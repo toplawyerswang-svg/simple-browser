@@ -11,8 +11,8 @@ android {
         applicationId = "com.trae.lightboat"
         minSdk = 24
         targetSdk = 34
-        versionCode = 40
-        versionName = "1.10.3"
+        versionCode = 41
+        versionName = "1.10.4"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }

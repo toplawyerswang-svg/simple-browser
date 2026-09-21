@@ -820,7 +820,12 @@ class SettingsActivity : AppCompatActivity() {
 
     private fun closeWxPreview() {
         binding.wxPreviewContainer.visibility = View.GONE
-        wxPreviewWebView?.loadUrl("about:blank")  // 保留实例复用，清掉内容
+        // 销毁重建：防止页内跳转留下的 history 变成多余的返回次数
+        wxPreviewWebView?.apply {
+            (parent as? FrameLayout)?.removeView(this)
+            destroy()
+        }
+        wxPreviewWebView = null
     }
 
     private fun wxPreviewVisible(): Boolean =
@@ -1401,10 +1406,7 @@ class SettingsActivity : AppCompatActivity() {
     @Deprecated("Deprecated in Java")
     override fun onBackPressed() {
         when {
-            wxPreviewVisible() -> {
-                val wv = wxPreviewWebView
-                if (wv != null && wv.canGoBack()) wv.goBack() else closeWxPreview()
-            }
+            wxPreviewVisible() -> closeWxPreview()  // 一步回列表；预览内不做页内后退
             selectionMode -> exitSelection()
             else -> super.onBackPressed()
         }
