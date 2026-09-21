@@ -1850,11 +1850,15 @@ def wxchat_list():
         if now > sh.get("expires_at", 0):
             continue
         chat = sh.get("chat") or {}
+        participants = chat.get("participants") or []
+        names = load_wxnames(sh.get("owner", ""))
         items.append({
             "share_id": sh["share_id"], "pwd": sh["pwd"],
             "title": sh.get("filename") or "聊天记录",
             "message_count": chat.get("message_count", 0),
-            "participant_count": len(chat.get("participants") or []),
+            "participant_count": len(participants),
+            "participants": participants,
+            "participants_display": [names.get(n, n) for n in participants],
             "attachment_count": len(sh.get("attachments") or []),
             "created_at": sh.get("created_at"),
             "expires_at": sh.get("expires_at"),

@@ -92,6 +92,7 @@ class SettingsActivity : AppCompatActivity() {
         val title: String,
         val messageCount: Int,
         val participantCount: Int,
+        val participantsDisplay: List<String>,
         val attachmentCount: Int,
         val expiresAt: Long,
         val url: String
@@ -555,6 +556,9 @@ class SettingsActivity : AppCompatActivity() {
                 val item = wxShares[position]
                 v.findViewById<TextView>(R.id.item_name).text = item.title
                 v.findViewById<TextView>(R.id.item_meta).text = wxMetaText(item)
+                v.findViewById<TextView>(R.id.item_members).text =
+                    getString(R.string.wxchat_item_members,
+                        item.participantsDisplay.joinToString("、"))
                 v.findViewById<TextView>(R.id.item_copy).setOnClickListener { copyWxLink(item) }
                 v.findViewById<TextView>(R.id.item_open).setOnClickListener { openWxShare(item) }
                 return v
@@ -682,6 +686,15 @@ class SettingsActivity : AppCompatActivity() {
                 val parsed = ArrayList<WxShareItem>(arr.length())
                 for (i in 0 until arr.length()) {
                     val o = arr.optJSONObject(i) ?: continue
+                    val disp = ArrayList<String>()
+                    val pArr = o.optJSONArray("participants_display")
+                    if (pArr != null) {
+                        for (k in 0 until pArr.length()) {
+                            val n = pArr.optString(k)
+                            if (n.isNotEmpty()) disp.add(n)
+                        }
+                    }
+                    if (disp.isEmpty()) disp.add(o.optString("title", "聊天记录"))
                     parsed.add(
                         WxShareItem(
                             shareId = o.optString("share_id"),
@@ -689,6 +702,7 @@ class SettingsActivity : AppCompatActivity() {
                             title = o.optString("title", "聊天记录"),
                             messageCount = o.optInt("message_count", 0),
                             participantCount = o.optInt("participant_count", 0),
+                            participantsDisplay = disp,
                             attachmentCount = o.optInt("attachment_count", 0),
                             expiresAt = o.optLong("expires_at"),
                             url = o.optString("url")
