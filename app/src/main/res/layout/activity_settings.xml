@@ -467,5 +467,91 @@
                     android:visibility="gone" />
             </LinearLayout>
         </LinearLayout>
+
+        <!-- 标签4：聊天记录分享 -->
+        <LinearLayout
+            android:id="@+id/page_wxchat"
+            android:layout_width="match_parent"
+            android:layout_height="match_parent"
+            android:orientation="vertical"
+            android:background="#F7F6F1"
+            android:visibility="gone">
+
+            <TextView
+                android:id="@+id/wxchat_auth_hint"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:padding="20dp"
+                android:text="@string/wxchat_manage_auth_hint"
+                android:textSize="14sp"
+                android:lineSpacingExtra="3dp"
+                android:visibility="gone" />
+
+            <LinearLayout
+                android:id="@+id/wxchat_content_panel"
+                android:layout_width="match_parent"
+                android:layout_height="match_parent"
+                android:orientation="vertical"
+                android:visibility="gone">
+
+                <LinearLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:gravity="center_vertical"
+                    android:orientation="horizontal"
+                    android:paddingStart="20dp"
+                    android:paddingEnd="12dp"
+                    android:paddingTop="10dp">
+
+                    <TextView
+                        android:id="@+id/wxchat_identity"
+                        android:layout_width="0dp"
+                        android:layout_height="wrap_content"
+                        android:layout_weight="1"
+                        android:textSize="13sp"
+                        android:textColor="#1565C0"
+                        android:textStyle="bold" />
+
+                    <Button
+                        android:id="@+id/wxchat_refresh"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:minHeight="0dp"
+                        android:paddingStart="12dp"
+                        android:paddingEnd="12dp"
+                        android:textSize="13sp"
+                        android:text="@string/asr_manage_refresh" />
+                </LinearLayout>
+
+                <TextView
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:paddingStart="20dp"
+                    android:paddingEnd="20dp"
+                    android:paddingTop="6dp"
+                    android:text="@string/wxchat_manage_hint"
+                    android:textSize="12sp"
+                    android:textColor="#8A8A8A" />
+
+                <ListView
+                    android:id="@+id/wxchat_list"
+                    android:layout_width="match_parent"
+                    android:layout_height="0dp"
+                    android:layout_weight="1"
+                    android:layout_marginTop="6dp"
+                    android:divider="@null" />
+
+                <TextView
+                    android:id="@+id/wxchat_empty"
+                    android:layout_width="match_parent"
+                    android:layout_height="0dp"
+                    android:layout_weight="1"
+                    android:gravity="center"
+                    android:text="@string/wxchat_manage_empty"
+                    android:textSize="14sp"
+                    android:textColor="#8A8A8A"
+                    android:visibility="gone" />
+            </LinearLayout>
+        </LinearLayout>
     </FrameLayout>
 </LinearLayout>

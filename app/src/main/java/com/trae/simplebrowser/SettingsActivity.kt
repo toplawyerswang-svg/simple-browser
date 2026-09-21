@@ -84,6 +84,26 @@ class SettingsActivity : AppCompatActivity() {
     private var mediaPlayer: MediaPlayer? = null
     private var playingTaskId: String? = null
 
+    // ---------- 聊天记录分享管理状态 ----------
+    private data class WxShareItem(
+        val shareId: String,
+        val pwd: String,
+        val title: String,
+        val messageCount: Int,
+        val participantCount: Int,
+        val attachmentCount: Int,
+        val expiresAt: Long,
+        val url: String
+    )
+
+    private val wxShares = ArrayList<WxShareItem>()
+    private lateinit var wxAdapter: BaseAdapter
+    private lateinit var wxAuthHint: TextView
+    private lateinit var wxContentPanel: LinearLayout
+    private lateinit var wxIdentityView: TextView
+    private lateinit var wxListView: ListView
+    private lateinit var wxEmptyView: TextView
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         binding = ActivitySettingsBinding.inflate(layoutInflater)
@@ -99,6 +119,7 @@ class SettingsActivity : AppCompatActivity() {
         setupBrowsePrefs()
         setupTabs()
         setupAsrManage()
+        setupWxChatManage()
         setupDownloadManage()
 
         val versionName = runCatching {
@@ -382,14 +403,21 @@ class SettingsActivity : AppCompatActivity() {
             binding.settingsTabs.newTab().setText(R.string.downloads_section_title))
         binding.settingsTabs.addTab(
             binding.settingsTabs.newTab().setText(R.string.asr_manage_title))
+        binding.settingsTabs.addTab(
+            binding.settingsTabs.newTab().setText(R.string.wxchat_manage_title))
         binding.settingsTabs.addOnTabSelectedListener(object : TabLayout.OnTabSelectedListener {
             override fun onTabSelected(tab: TabLayout.Tab) {
                 binding.pageOther.visibility = if (tab.position == 0) View.VISIBLE else View.GONE
                 binding.pageDownloads.visibility = if (tab.position == 1) View.VISIBLE else View.GONE
                 binding.pageAsr.visibility = if (tab.position == 2) View.VISIBLE else View.GONE
+                binding.pageWxchat.visibility = if (tab.position == 3) View.VISIBLE else View.GONE
                 if (tab.position == 2) {
                     refreshAsrPanel()
                     if (!asrLoaded) loadTasks()
+                }
+                if (tab.position == 3) {
+                    refreshWxChatPanel()
+                    loadWxShares()
                 }
             }
 
@@ -397,6 +425,7 @@ class SettingsActivity : AppCompatActivity() {
             override fun onTabReselected(tab: TabLayout.Tab) {
                 if (tab.position == 1) renderDownloads()
                 if (tab.position == 2) loadTasks()
+                if (tab.position == 3) loadWxShares()
             }
         })
     }
@@ -492,6 +521,148 @@ class SettingsActivity : AppCompatActivity() {
                 }
             }
         }.start()
+    }
+
+    // ---------- 聊天记录分享：列表 / 复制链接 / 打开 / 删除 ----------
+
+    private fun refreshWxChatPanel() {
+        if (AsrAuth.hasToken(this)) {
+            wxAuthHint.visibility = View.GONE
+            wxContentPanel.visibility = View.VISIBLE
+            wxIdentityView.text = getString(R.string.asr_identity_label,
+                AppPrefs.getAsrUser(this).ifEmpty { "?? " })
+        } else {
+            wxAuthHint.visibility = View.VISIBLE
+            wxContentPanel.visibility = View.GONE
+        }
+    }
+
+    private fun setupWxChatManage() {
+        wxAuthHint = binding.wxchatAuthHint
+        wxContentPanel = binding.wxchatContentPanel
+        wxIdentityView = binding.wxchatIdentity
+        wxListView = binding.wxchatList
+        wxEmptyView = binding.wxchatEmpty
+
+        wxAdapter = object : BaseAdapter() {
+            override fun getCount(): Int = wxShares.size
+            override fun getItem(position: Int): Any = wxShares[position]
+            override fun getItemId(position: Int): Long = position.toLong()
+            override fun getView(position: Int, convertView: View?, parent: ViewGroup): View {
+                val v = convertView ?: LayoutInflater.from(this@SettingsActivity)
+                    .inflate(R.layout.wx_share_item, parent, false)
+                val item = wxShares[position]
+                v.findViewById<TextView>(R.id.item_name).text = item.title
+                v.findViewById<TextView>(R.id.item_meta).text = wxMetaText(item)
+                v.findViewById<TextView>(R.id.item_copy).setOnClickListener { copyWxLink(item) }
+                v.findViewById<TextView>(R.id.item_open).setOnClickListener { openWxShare(item) }
+                return v
+            }
+        }
+        wxListView.adapter = wxAdapter
+        wxListView.setOnItemClickListener { _, _, position, _ -> openWxShare(wxShares[position]) }
+        wxListView.setOnItemLongClickListener { _, _, position, _ ->
+            confirmDeleteWxShare(wxShares[position])
+            true
+        }
+
+        binding.wxchatRefresh.setOnClickListener { loadWxShares() }
+    }
+
+    private fun wxMetaText(item: WxShareItem): String {
+        val fmt = SimpleDateFormat("yyyy-MM-dd", Locale.CHINA)
+        val remain = ((item.expiresAt - System.currentTimeMillis() / 1000) / 86400).coerceAtLeast(0)
+        return getString(R.string.wxchat_item_meta, item.messageCount,
+            item.attachmentCount, fmt.format(Date(item.expiresAt * 1000)), remain)
+    }
+
+    private fun loadWxShares() {
+        if (!AsrAuth.hasToken(this)) {
+            refreshWxChatPanel()
+            return
+        }
+        Thread {
+            try {
+                val arr = AsrClient.listWxChatShares(this)
+                val parsed = ArrayList<WxShareItem>(arr.length())
+                for (i in 0 until arr.length()) {
+                    val o = arr.optJSONObject(i) ?: continue
+                    parsed.add(
+                        WxShareItem(
+                            shareId = o.optString("share_id"),
+                            pwd = o.optString("pwd"),
+                            title = o.optString("title", "聊天记录"),
+                            messageCount = o.optInt("message_count", 0),
+                            participantCount = o.optInt("participant_count", 0),
+                            attachmentCount = o.optInt("attachment_count", 0),
+                            expiresAt = o.optLong("expires_at"),
+                            url = o.optString("url")
+                        )
+                    )
+                }
+                runOnUiThread {
+                    if (isFinishing || isDestroyed) return@runOnUiThread
+                    refreshWxChatPanel()
+                    wxShares.clear()
+                    wxShares.addAll(parsed)
+                    wxAdapter.notifyDataSetChanged()
+                    wxListView.visibility = if (wxShares.isEmpty()) View.GONE else View.VISIBLE
+                    wxEmptyView.visibility = if (wxShares.isEmpty()) View.VISIBLE else View.GONE
+                }
+            } catch (e: AsrAuthException) {
+                runOnUiThread {
+                    if (!isFinishing && !isDestroyed) {
+                        Toast.makeText(this, asrErrorText(e), Toast.LENGTH_LONG).show()
+                    }
+                }
+            } catch (e: Exception) {
+                runOnUiThread {
+                    if (!isFinishing && !isDestroyed) Toast.makeText(this, asrErrorText(e), Toast.LENGTH_LONG).show()
+                }
+            }
+        }.start()
+    }
+
+    private fun copyWxLink(item: WxShareItem) {
+        val cm = getSystemService(Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
+        cm.setPrimaryClip(android.content.ClipData.newPlainText("share",
+            getString(R.string.wxchat_share_text, item.title, item.url)))
+        Toast.makeText(this, R.string.asr_share_copied, Toast.LENGTH_SHORT).show()
+    }
+
+    /** 点击条目：在浏览器里打开分享页。 */
+    private fun openWxShare(item: WxShareItem) {
+        startActivity(
+            Intent(this, MainActivity::class.java)
+                .setFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP)
+                .setData(Uri.parse(item.url)))
+        finish()
+    }
+
+    private fun confirmDeleteWxShare(item: WxShareItem) {
+        AlertDialog.Builder(this)
+            .setTitle(R.string.wxchat_delete_title)
+            .setMessage(getString(R.string.wxchat_delete_confirm, item.title))
+            .setNegativeButton(android.R.string.cancel, null)
+            .setPositiveButton(android.R.string.ok) { _, _ ->
+                Thread {
+                    try {
+                        AsrClient.deleteWxChatShare(this, item.shareId)
+                        runOnUiThread {
+                            if (isFinishing || isDestroyed) return@runOnUiThread
+                            Toast.makeText(this, R.string.wxchat_deleted, Toast.LENGTH_SHORT).show()
+                            loadWxShares()
+                        }
+                    } catch (e: Exception) {
+                        runOnUiThread {
+                            if (!isFinishing && !isDestroyed) {
+                                Toast.makeText(this, asrErrorText(e), Toast.LENGTH_LONG).show()
+                            }
+                        }
+                    }
+                }.start()
+            }
+            .show()
     }
 
     private fun loadTasks() {

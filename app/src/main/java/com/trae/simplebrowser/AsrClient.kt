@@ -303,6 +303,30 @@ object AsrClient {
         )
     }
 
+    // ------------------------------------------------------------ 微信聊天记录转存分享管理
+
+    /** 我的聊天记录转存分享列表（设置页管理入口）。 */
+    fun listWxChatShares(context: Context): JSONArray {
+        val conn = connection(context, "$BASE_URL/wxchat/list")
+        val code = conn.responseCode
+        val body = readBody(conn, code)
+        checkCode(code, body)
+        return JSONObject(body).optJSONArray("shares") ?: JSONArray()
+    }
+
+    /** 删除我的聊天记录分享（含服务器上的附件）。 */
+    fun deleteWxChatShare(context: Context, shareId: String) {
+        val conn = (URL("$BASE_URL/wxchat/$shareId").openConnection() as HttpURLConnection).apply {
+            requestMethod = "DELETE"
+            connectTimeout = 15000
+            readTimeout = 20000
+            setRequestProperty("X-LZ-Token", token(context))
+        }
+        val code = conn.responseCode
+        val body = readBody(conn, code)
+        checkCode(code, body)
+    }
+
     // ------------------------------------------------------------ 内部
 
     private fun token(context: Context): String = AppPrefs.getAsrToken(context)

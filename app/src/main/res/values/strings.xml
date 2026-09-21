@@ -58,6 +58,16 @@
     <string name="wxchat_btn_copy">复制链接</string>
     <string name="wxchat_btn_open">打开</string>
     <string name="wxchat_btn_share">转发</string>
+    <!-- 聊天记录分享管理（设置页标签） -->
+    <string name="wxchat_manage_title">聊天记录分享</string>
+    <string name="wxchat_manage_auth_hint">管理微信聊天记录的转存分享，需要先完成访问令牌核验：请切换到「音视频识别」标签输入令牌。</string>
+    <string name="wxchat_manage_hint">点击条目打开分享页；「链接」复制分享链接（含提取码）；长按删除分享，服务器上的附件一并删除。</string>
+    <string name="wxchat_manage_empty">暂无聊天记录分享。在微信里把合并转发的聊天记录分享给轻舟浏览器即可转存。</string>
+    <string name="wxchat_item_meta">%1$d 条消息 · %2$d 个附件 · 有效期至 %3$s（剩 %4$d 天）</string>
+    <string name="wxchat_item_copy">链接</string>
+    <string name="wxchat_delete_title">删除分享</string>
+    <string name="wxchat_delete_confirm">确定删除「%1$s」的分享？删除后链接立即失效，服务器上的附件一并删除。</string>
+    <string name="wxchat_deleted">分享已删除</string>
     <string name="asr_pill_batch_fmt">[%1$d/%2$d] %3$s</string>
     <string name="asr_failed_prefix">处理失败：</string>
     <string name="asr_batch_failed_list_fmt">以下 %1$d 个文件转写失败：\n\n%2$s</string>
