@@ -1901,6 +1901,30 @@ def wxchat_list():
             disp_list = [names.get(n, n) for n in participants]
             chat["name_display"] = {n: disp_list[i] for i, n in enumerate(participants)}
             save_share(sh)
+        # 附件解析状态聚合（none=无可解析附件；pending 时顺手兜底补跑）
+        ocr_done = ocr_pending = ocr_failed = ocr_total = 0
+        for a in sh.get("attachments") or []:
+            st = a.get("ocr_status")
+            if st not in ("done", "pending", "failed", "skipped"):
+                continue
+            ocr_total += 1
+            if st == "done":
+                ocr_done += 1
+            elif st == "pending":
+                ocr_pending += 1
+            elif st == "failed":
+                ocr_failed += 1
+        if ocr_total == 0:
+            ocr_state = "none"
+        elif ocr_pending:
+            ocr_state = "pending"
+            wxchat_kick_ocr(sh["share_id"])  # 服务重启丢掉的解析，刷列表时复活
+        elif ocr_failed == ocr_total:
+            ocr_state = "failed"
+        elif ocr_failed:
+            ocr_state = "partial"
+        else:
+            ocr_state = "done"
         items.append({
             "share_id": sh["share_id"], "pwd": sh["pwd"],
             "title": sh.get("filename") or "聊天记录",
@@ -1908,6 +1932,7 @@ def wxchat_list():
             "participant_count": len(participants),
             "participants": participants,
             "participants_display": disp_list,
+            "ocr_state": ocr_state, "ocr_done": ocr_done, "ocr_total": ocr_total,
             "attachment_count": len(sh.get("attachments") or []),
             "created_at": sh.get("created_at"),
             "expires_at": sh.get("expires_at"),

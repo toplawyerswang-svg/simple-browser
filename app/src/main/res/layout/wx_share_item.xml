@@ -42,6 +42,14 @@
             android:textColor="#576b95"
             android:maxLines="2"
             android:ellipsize="end" />
+
+        <TextView
+            android:id="@+id/item_ocr"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="3dp"
+            android:textSize="12sp"
+            android:visibility="gone" />
     </LinearLayout>
 
     <TextView

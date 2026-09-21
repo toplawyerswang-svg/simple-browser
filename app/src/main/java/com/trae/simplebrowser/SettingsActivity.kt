@@ -95,7 +95,10 @@ class SettingsActivity : AppCompatActivity() {
         val participantsDisplay: List<String>,
         val attachmentCount: Int,
         val expiresAt: Long,
-        val url: String
+        val url: String,
+        val ocrState: String,
+        val ocrDone: Int,
+        val ocrTotal: Int
     )
 
     private val wxShares = ArrayList<WxShareItem>()
@@ -559,6 +562,31 @@ class SettingsActivity : AppCompatActivity() {
                 v.findViewById<TextView>(R.id.item_members).text =
                     getString(R.string.wxchat_item_members,
                         item.participantsDisplay.joinToString("、"))
+                val ocrView = v.findViewById<TextView>(R.id.item_ocr)
+                when (item.ocrState) {
+                    "done" -> {
+                        ocrView.text = getString(R.string.wxchat_ocr_done)
+                        ocrView.setTextColor(0xFF388E3C.toInt())
+                        ocrView.visibility = View.VISIBLE
+                    }
+                    "pending" -> {
+                        ocrView.text = getString(R.string.wxchat_ocr_pending)
+                        ocrView.setTextColor(0xFFE65100.toInt())
+                        ocrView.visibility = View.VISIBLE
+                    }
+                    "partial" -> {
+                        ocrView.text = getString(R.string.wxchat_ocr_partial,
+                            item.ocrDone, item.ocrTotal)
+                        ocrView.setTextColor(0xFFD32F2F.toInt())
+                        ocrView.visibility = View.VISIBLE
+                    }
+                    "failed" -> {
+                        ocrView.text = getString(R.string.wxchat_ocr_failed, item.ocrTotal)
+                        ocrView.setTextColor(0xFFD32F2F.toInt())
+                        ocrView.visibility = View.VISIBLE
+                    }
+                    else -> ocrView.visibility = View.GONE
+                }
                 v.findViewById<TextView>(R.id.item_copy).setOnClickListener { copyWxLink(item) }
                 v.findViewById<TextView>(R.id.item_open).setOnClickListener { openWxShare(item) }
                 return v
@@ -705,7 +733,10 @@ class SettingsActivity : AppCompatActivity() {
                             participantsDisplay = disp,
                             attachmentCount = o.optInt("attachment_count", 0),
                             expiresAt = o.optLong("expires_at"),
-                            url = o.optString("url")
+                            url = o.optString("url"),
+                            ocrState = o.optString("ocr_state", "none"),
+                            ocrDone = o.optInt("ocr_done", 0),
+                            ocrTotal = o.optInt("ocr_total", 0)
                         )
                     )
                 }
