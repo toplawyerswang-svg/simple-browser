@@ -1666,6 +1666,44 @@ def wxchat_names():
                    self_nickname=names.get("__self__"))
 
 
+@app.post("/api/asr/wxchat/names")
+def wxchat_names_bulk():
+    """批量设置昵称→真名；share_id 给出时同步刷新该分享的显示名快照
+    （转存完成后 APP 弹窗填名的保存通道）。空真名的项跳过不覆盖。"""
+    user = authenticate()
+    if user is None:
+        return jsonify(error="unauthorized"), 401
+    data = request.get_json(force=True, silent=True) or {}
+    raw = data.get("mapping") or {}
+    share_id = str(data.get("share_id") or "").strip()
+    if not isinstance(raw, dict):
+        return jsonify(error="mapping 需为对象"), 400
+    names = load_wxnames(user)
+    count = 0
+    for k, v in raw.items():
+        nick = str(k).strip()[:100]
+        real = str(v).strip()[:100]
+        if nick and real:  # 空真名=该项不设置（不清除已有映射）
+            names[nick] = real
+            count += 1
+    p = _wxnames_path(user)
+    tmp = DATA / (p.name + ".tmp")
+    tmp.write_text(json.dumps(names, ensure_ascii=False), encoding="utf-8")
+    os.replace(tmp, p)
+    refreshed = False
+    if share_id and re.fullmatch(r"[0-9a-f]{6,32}", share_id):
+        sh = load_share(share_id)
+        if sh is not None and sh.get("type") == "wxchat" and sh.get("owner") == user:
+            chat = sh.get("chat") or {}
+            participants = chat.get("participants") or []
+            chat["name_display"] = {n: names.get(n, n) for n in participants}
+            save_share(sh)
+            refreshed = True
+    print("wxchat names bulk by", user, ":", count, "entries, refresh", share_id or "-",
+          "->", refreshed, flush=True)
+    return jsonify(saved=True, count=count, refreshed=refreshed)
+
+
 @app.post("/api/asr/wxchat/name")
 def wxchat_set_name():
     """设置/清除（realname 空）昵称的真名映射；实时作用于所有分享展示。"""
@@ -1818,7 +1856,8 @@ def upload_wxchat():
     wxchat_kick_ocr(sid)
     return jsonify(share_id=sid, pwd=pwd,
                    url="%s/%s?pwd=%s" % (SHARE_BASE, sid, pwd),
-                   validity_hours=WXCHAT_HOURS, expires_at=share["expires_at"])
+                   validity_hours=WXCHAT_HOURS, expires_at=share["expires_at"],
+                   participants=chat["participants"])
 
 
 def _wxchat_check(sid):

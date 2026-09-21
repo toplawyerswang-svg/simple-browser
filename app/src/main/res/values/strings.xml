@@ -83,6 +83,11 @@
     <string name="wxchat_name_marked">已标记为我方：该昵称的消息按发出方展示</string>
     <string name="wxchat_name_unmarked">已取消我方标记</string>
     <string name="wxchat_item_members">参与者：%1$s</string>
+    <!-- 转存后真名填写弹窗 -->
+    <string name="wxchat_fill_title">设置微信昵称的真名</string>
+    <string name="wxchat_fill_note">填写后，这份与之后转存的聊天记录都会按真名展示；留空则保持昵称。</string>
+    <string name="wxchat_fill_save">保存</string>
+    <string name="wxchat_fill_skip">跳过</string>
     <string name="asr_pill_batch_fmt">[%1$d/%2$d] %3$s</string>
     <string name="asr_failed_prefix">处理失败：</string>
     <string name="asr_batch_failed_list_fmt">以下 %1$d 个文件转写失败：\n\n%2$s</string>

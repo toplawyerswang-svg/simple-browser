@@ -234,13 +234,15 @@ object AsrClient {
         return if (aMs >= 0 && bMs > aMs) "$base?a=$aMs&b=$bMs&token=$t" else "$base?token=$t"
     }
 
-    /** 微信聊天记录转存分享：服务端解析 zip 后直接返回分享链接（30 天有效）。 */
+    /** 微信聊天记录转存分享：服务端解析 zip 后直接返回分享链接（30 天有效）。
+     *  participants 为记录中出现的微信昵称（转存后弹真名填写框用）。 */
     data class WxChatShare(
         val shareId: String,
         val pwd: String,
         val url: String,
         val validityHours: Int,
-        val expiresAt: Long
+        val expiresAt: Long,
+        val participants: List<String>
     )
 
     /** 上传微信聊天记录 zip 建分享，onProgress 回调上传进度 0..100。 */
@@ -294,13 +296,43 @@ object AsrClient {
         if (code == 401) throw AsrAuthException()
         if (code !in 200..299) throw IllegalStateException("服务器返回 $code: ${body.take(200)}")
         val j = JSONObject(body)
+        val participants = ArrayList<String>()
+        val pArr = j.optJSONArray("participants")
+        if (pArr != null) {
+            for (i in 0 until pArr.length()) {
+                val n = pArr.optString(i)
+                if (n.isNotEmpty()) participants.add(n)
+            }
+        }
         return WxChatShare(
             shareId = j.getString("share_id"),
             pwd = j.getString("pwd"),
             url = j.getString("url"),
             validityHours = j.optInt("validity_hours", 720),
-            expiresAt = j.optLong("expires_at", 0L)
+            expiresAt = j.optLong("expires_at", 0L),
+            participants = participants
         )
+    }
+
+    /** 批量设置昵称→真名并刷新指定分享的显示名快照（转存后填名的保存通道）。
+     *  空真名项由调用方过滤；服务端对 share 做 owner 校验。 */
+    fun bulkSetWxNames(context: Context, mapping: Map<String, String>, shareId: String?) {
+        val conn = (URL("$BASE_URL/wxchat/names").openConnection() as HttpURLConnection).apply {
+            requestMethod = "POST"
+            connectTimeout = 15000
+            readTimeout = 30000
+            doOutput = true
+            setRequestProperty("X-LZ-Token", token(context))
+            setRequestProperty("Content-Type", "application/json")
+        }
+        val payload = JSONObject().apply {
+            put("mapping", JSONObject(mapping))
+            if (!shareId.isNullOrBlank()) put("share_id", shareId)
+        }
+        conn.outputStream.use { it.write(payload.toString().toByteArray(Charsets.UTF_8)) }
+        val code = conn.responseCode
+        val body = readBody(conn, code)
+        checkCode(code, body)
     }
 
     // ------------------------------------------------------------ 微信聊天记录转存分享管理

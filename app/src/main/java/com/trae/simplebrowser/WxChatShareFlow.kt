@@ -11,6 +11,10 @@ import android.net.Uri
 import android.os.Build
 import android.util.Log
 import android.view.View
+import android.graphics.Typeface
+import android.widget.EditText
+import android.widget.LinearLayout
+import android.widget.ScrollView
 import android.widget.TextView
 import android.widget.Toast
 import androidx.appcompat.app.AlertDialog
@@ -33,9 +37,11 @@ object WxChatShareFlow {
     private const val NOTIF_ID_RESULT = 2003
     private var lastNotifyAt = 0L
 
-    /** 一次成功的转存：displayName 是原始 zip 名，url 已含提取码。 */
-    data class Success(val displayName: String, val url: String,
-                       val pwd: String, val expiresAt: Long)
+    /** 一次成功的转存：displayName 是原始 zip 名，url 已含提取码；
+     *  shareId/participants 用于转存后的真名填写（保存需刷新该份快照）。 */
+    data class Success(val displayName: String, val url: String, val pwd: String,
+                       val expiresAt: Long, val shareId: String,
+                       val participants: List<String>)
 
     private var uiRef = WeakReference<MainActivity>(null)
 
@@ -94,30 +100,134 @@ object WxChatShareFlow {
                 report(appCtx, appCtx.getString(R.string.wxchat_pill_upload, pct), pct, total, ordinal)
             }
             Log.i(TAG, "wxchat share created: ${share.shareId}")
-            return Success(displayName, share.url, share.pwd, share.expiresAt)
+            return Success(displayName, share.url, share.pwd, share.expiresAt,
+                share.shareId, share.participants)
         } finally {
             local.delete()
         }
     }
 
-    /** 完成的一项：页面在前台直接弹链接，否则排队等回前台。 */
+    /** 完成的一项：页面在前台先弹真名填写（保存后刷本份快照），否则排队等回前台。 */
     private fun deliver(s: Success) {
         val activity = uiRef.get()
         if (AsrShareFlow.activityResumed && activity != null && !activity.isFinishing) {
-            showResult(activity, listOf(s))
+            showNameDialog(activity, listOf(s))
         } else {
             synchronized(pendingResults) { pendingResults.add(s) }
         }
     }
 
-    /** MainActivity 回前台时调用：弹后台期间完成的转存链接。 */
+    /** MainActivity 回前台时调用：弹后台期间完成的真名填写。 */
     fun drainPending(activity: MainActivity) {
         val results = synchronized(pendingResults) {
             val list = pendingResults.toList()
             pendingResults.clear()
             list
         }
-        if (results.isNotEmpty()) showResult(activity, results)
+        if (results.isNotEmpty()) showNameDialog(activity, results)
+    }
+
+    /** 真名填写界面：本份记录的全部微信昵称逐行预填（已设过的带出），
+     *  保存=批量写入映射并刷新本份快照（分享页立即按真名），跳过=保持现状。 */
+    private fun showNameDialog(activity: MainActivity, results: List<Success>) {
+        Thread {
+            val mapping = HashMap<String, String>()
+            runCatching {
+                val o = AsrClient.listWxNameMappings(activity).optJSONObject("names")
+                if (o != null) for (k in o.keys()) mapping[k] = o.optString(k)
+            }  // 预填失败不阻断填写，编辑框留空即可
+            fireUi(activity) { buildAndShowNameDialog(activity, results, mapping) }
+        }.start()
+    }
+
+    private fun buildAndShowNameDialog(activity: MainActivity, results: List<Success>,
+                                       mapping: Map<String, String>) {
+        if (activity.isFinishing) return
+        val density = activity.resources.displayMetrics.density
+        fun dp(v: Int) = (v * density).toInt()
+
+        val box = LinearLayout(activity).apply { orientation = LinearLayout.VERTICAL }
+        val editors = ArrayList<Pair<String, EditText>>()
+        val seen = HashSet<String>()
+        for (s in results) {
+            if (s.participants.isEmpty()) continue
+            if (results.size > 1) {
+                box.addView(TextView(activity).apply {
+                    text = s.displayName
+                    textSize = 13f
+                    setTextColor(0xFF1565C0.toInt())
+                    setTypeface(typeface, Typeface.BOLD)
+                    setPadding(0, dp(10), 0, 0)
+                })
+            }
+            for (nick in s.participants) {
+                if (!seen.add(nick)) continue  // 多份记录重复昵称只填一次
+                box.addView(TextView(activity).apply {
+                    text = nick
+                    textSize = 14f
+                    setTextColor(0xFF212121.toInt())
+                    setTypeface(typeface, Typeface.BOLD)
+                    setPadding(0, dp(8), 0, 0)
+                })
+                val edit = EditText(activity).apply {
+                    hint = activity.getString(R.string.wxchat_name_hint)
+                    setText(mapping[nick] ?: "")
+                    setSingleLine(true)
+                }
+                box.addView(edit)
+                editors.add(nick to edit)
+            }
+        }
+        val scroll = ScrollView(activity).apply { addView(box) }
+        val note = TextView(activity).apply {
+            text = activity.getString(R.string.wxchat_fill_note)
+            textSize = 12f
+            setTextColor(0xFF8A8A8A.toInt())
+            setPadding(dp(4), dp(10), dp(4), 0)
+        }
+        val wrapper = LinearLayout(activity).apply {
+            orientation = LinearLayout.VERTICAL
+            addView(note)
+            addView(scroll)
+        }
+
+        val dialog = AlertDialog.Builder(activity)
+            .setTitle(R.string.wxchat_fill_title)
+            .setView(wrapper)
+            .setCancelable(false)
+            .setPositiveButton(R.string.wxchat_fill_save, null)
+            .setNegativeButton(R.string.wxchat_fill_skip) { _, _ ->
+                showResult(activity, results)
+            }
+            .create()
+        dialog.setOnShowListener {
+            val btn = dialog.getButton(AlertDialog.BUTTON_POSITIVE)
+            btn.setOnClickListener {
+                val toSave = editors.mapNotNull { (nick, edit) ->
+                    val v = edit.text.toString().trim()
+                    if (v.isNotEmpty()) nick to v else null
+                }.toMap()
+                btn.isEnabled = false
+                Thread {
+                    try {
+                        AsrClient.bulkSetWxNames(activity, toSave, results.first().shareId)
+                        fireUi(activity) {
+                            dialog.dismiss()
+                            showResult(activity, results)
+                        }
+                    } catch (e: Exception) {
+                        fireUi(activity) {
+                            btn.isEnabled = true
+                            if (!activity.isFinishing) {
+                                Toast.makeText(activity, activity.getString(R.string.asr_failed_prefix) +
+                                    (e.message ?: e.toString()), Toast.LENGTH_LONG).show()
+                            }
+                        }
+                    }
+                }.start()
+            }
+        }
+        dialog.show()
     }
 
     private fun finishBatch(context: Context, done: Int, failures: List<String>) {
