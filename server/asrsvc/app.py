@@ -1896,6 +1896,9 @@ h1{font-size:19px;color:#111;margin-bottom:6px;word-break:break-all}
 .others a{color:#576b95;text-decoration:none}
 .bubble.media{padding:4px}
 .pic{max-width:100%;max-height:320px;border-radius:4px;display:block}
+.piclink{display:block;cursor:zoom-in}
+#viewer{position:fixed;left:0;top:0;width:100%;height:100%;background:rgba(0,0,0,.93);z-index:99;display:none;align-items:center;justify-content:center}
+#viewimg{max-width:96vw;max-height:96vh;object-fit:contain}
 .ocrwrap{width:100%}
 .ocrbtn{display:inline-block;font-size:12px;color:#576b95;margin-top:6px;cursor:pointer}
 .ocr{background:#f7f7f7;border-radius:6px;padding:8px;font-size:12px;line-height:1.5;white-space:pre-wrap;word-break:break-word;max-height:320px;overflow-y:auto;margin-top:4px;color:#333}
@@ -1919,7 +1922,7 @@ for(var i=0;i<CHAT.messages.length;i++){
     inner='<div class="fcard"><div class="ficon">📄</div><div><div class="fname">'+esc(m.text)+'</div><div class="fsize">'+(m.size?hsize(m.size):"文件")+'</div>'+dl+'</div></div>';
   }else if(m.type==="image"){
     var src=m.att!=null?'/s/'+SID+'/file/'+m.att+'?pwd='+encodeURIComponent(PWD):"";
-    inner=src?'<a href="'+src+'" target="_blank"><img class="pic" src="'+src+'" loading="lazy"></a>':'<span class="tagonly">[图片]</span>';
+    inner=src?'<a class="piclink" onclick="showPic(this)" data-full="'+src+'"><img class="pic" src="'+src+'" loading="lazy"></a>':'<span class="tagonly">[图片]</span>';
   }else if(m.type==="video"){
     var vsrc=m.att!=null?'/s/'+SID+'/file/'+m.att+'?pwd='+encodeURIComponent(PWD):"";
     inner=vsrc?'<video class="pic" src="'+vsrc+'" controls preload="metadata"></video>':'<span class="tagonly">[视频]</span>';
@@ -1944,6 +1947,9 @@ function legacyCopy(t){var ta=document.createElement("textarea");ta.value=t;ta.s
 function copyText(t,ok){if(navigator.clipboard&&navigator.clipboard.writeText){navigator.clipboard.writeText(t).then(ok,function(){legacyCopy(t);ok();});}else{legacyCopy(t);ok();}}
 function copyAll(){var t="";for(var i=0;i<CHAT.messages.length;i++){var m=CHAT.messages[i];t+="["+m.time+"] "+m.sender+": "+m.text+"\n";}copyText(t,function(){toast("复制成功");});}
 function toggleOcr(el){var p=el.nextElementSibling;var show=p.style.display==="none";p.style.display=show?"block":"none";el.textContent=show?"收起解析结果":"查看解析结果";}
+var viewer=document.createElement("div");viewer.id="viewer";viewer.innerHTML='<img id="viewimg" alt="">';viewer.onclick=function(){viewer.style.display="none";};document.body.appendChild(viewer);
+function showPic(a){document.getElementById("viewimg").src=a.getAttribute("data-full");viewer.style.display="flex";history.pushState({v:1},"");}
+window.onpopstate=function(){if(viewer.style.display==="flex")viewer.style.display="none";};
 """
 
 
