@@ -336,8 +336,10 @@ object AsrClient {
         return JSONObject(body)
     }
 
-    /** 设置（realname 空=清除）微信昵称的真名映射，实时作用于所有分享展示。 */
-    fun setWxNameMapping(context: Context, nickname: String, realname: String) {
+    /** 设置（realname 空=清除）微信昵称的真名映射；markSelf=true 标记为机主昵称，
+     *  false 取消标记，null 不变。实时作用于所有分享展示。 */
+    fun setWxNameMapping(context: Context, nickname: String, realname: String,
+                         markSelf: Boolean? = null) {
         val conn = (URL("$BASE_URL/wxchat/name").openConnection() as HttpURLConnection).apply {
             requestMethod = "POST"
             connectTimeout = 15000
@@ -347,8 +349,11 @@ object AsrClient {
             setRequestProperty("Content-Type", "application/x-www-form-urlencoded")
         }
         conn.outputStream.use { os ->
-            val body = "nickname=" + java.net.URLEncoder.encode(nickname, "UTF-8") +
-                "&realname=" + java.net.URLEncoder.encode(realname, "UTF-8")
+            val body = buildString {
+                append("nickname=").append(java.net.URLEncoder.encode(nickname, "UTF-8"))
+                append("&realname=").append(java.net.URLEncoder.encode(realname, "UTF-8"))
+                if (markSelf != null) append("&self=").append(if (markSelf) "1" else "0")
+            }
             os.write(body.toByteArray(Charsets.UTF_8))
         }
         val code = conn.responseCode

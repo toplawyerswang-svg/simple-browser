@@ -1631,7 +1631,7 @@ def _ocr_pdf_to_markdown(pdf_path):
 
 def _wxnames_path(user):
     safe = re.sub(r"[^0-9A-Za-z_\-\u4e00-\u9fff]", "_", user)[:60]
-    return DATA / ("wxnames_%s.json" % safe)
+    return DATA / ("wxnames_%s.map" % safe)  # 非 .json 后缀，避开 DATA 任务文件遍历
 
 
 def load_wxnames(user):
@@ -1662,7 +1662,8 @@ def wxchat_names():
         for n in (sh.get("chat") or {}).get("participants") or []:
             if n not in known:
                 known.append(n)
-    return jsonify(names=names, known=known)
+    return jsonify(names=names, known=known,
+                   self_nickname=names.get("__self__"))
 
 
 @app.post("/api/asr/wxchat/name")
@@ -1680,6 +1681,11 @@ def wxchat_set_name():
         names[nickname] = realname
     else:
         names.pop(nickname, None)
+    mark_self = request.form.get("self", "")
+    if mark_self == "1":
+        names["__self__"] = nickname  # 标记该昵称为机主（发出方）
+    elif mark_self == "0" and names.get("__self__") == nickname:
+        names.pop("__self__", None)
     p = _wxnames_path(user)
     tmp = DATA / (p.name + ".tmp")
     tmp.write_text(json.dumps(names, ensure_ascii=False), encoding="utf-8")
@@ -1887,9 +1893,13 @@ def wxchat_json(sid):
     wxchat_kick_ocr(sid)  # 服务重启丢掉的解析在这里兜底补跑
     names = load_wxnames(sh.get("owner", ""))
     realnames = {n: names[n] for n in chat.get("participants") or [] if names.get(n)}
+    self_nick = names.get("__self__")
+    if self_nick and self_nick not in (chat.get("participants") or []):
+        self_nick = None
     for m in chat["messages"]:
         if m["sender"] in realnames:
             m["realname"] = realnames[m["sender"]]
+        m["is_self"] = bool(self_nick and m["sender"] == self_nick)
         if "att" in m and m["att"] < len(sh["attachments"]):
             a = sh["attachments"][m["att"]]
             if "path" in a:
@@ -1909,7 +1919,7 @@ def wxchat_json(sid):
         atts.append(item)
     chat.pop("attachments")  # 用补好 URL 的 atts 替代原始附件表
     return jsonify(title=chat.pop("title"), source=chat.pop("source"),
-                   attachments=atts, realnames=realnames,
+                   attachments=atts, realnames=realnames, self_nickname=self_nick,
                    expires_at=sh["expires_at"], **chat)
 
 
@@ -1965,6 +1975,11 @@ h1{font-size:19px;color:#111;margin-bottom:6px;word-break:break-all}
 .piclink{display:block;cursor:zoom-in}
 #viewer{position:fixed;left:0;top:0;width:100%;height:100%;background:rgba(0,0,0,.93);z-index:99;display:none;align-items:center;justify-content:center}
 #viewimg{max-width:96vw;max-height:96vh;object-fit:contain}
+.mrow.self{flex-direction:row-reverse}
+.mcol.self{display:flex;flex-direction:column;align-items:flex-end}
+.mcol.self .mlabel{align-self:flex-end}
+.bubble.self{background:#95ec69}
+.bubble.self:before{left:auto;right:-5px;background:#95ec69}
 .ocrwrap{width:100%}
 .ocrbtn{display:inline-block;font-size:12px;color:#576b95;margin-top:6px;cursor:pointer}
 .ocr{background:#f7f7f7;border-radius:6px;padding:8px;font-size:12px;line-height:1.5;white-space:pre-wrap;word-break:break-word;max-height:320px;overflow-y:auto;margin-top:4px;color:#333}
@@ -1982,6 +1997,7 @@ for(var i=0;i<CHAT.messages.length;i++){
   var m=CHAT.messages[i];
   var color=PALETTE[cmap[m.sender]%PALETTE.length];
   var dn=RNAMES[m.sender]||m.sender;
+  var isSelf=SELF_NICK&&m.sender===SELF_NICK;
   var av=esc(dn.substring(0,1));
   var inner;
   if(m.type==="file"){
@@ -2002,10 +2018,10 @@ for(var i=0;i<CHAT.messages.length;i++){
     if(A.ocr){ocrExtra='<div class="ocrwrap"><a class="ocrbtn" onclick="toggleOcr(this)">查看解析结果</a><pre class="ocr" style="display:none">'+esc(A.ocr)+'</pre></div>';}
     else if(A.ocr_status==="pending"){ocrExtra='<div class="ocrwrap"><a class="ocrbtn" style="color:#999;pointer-events:none">解析中，稍后刷新可见</a></div>';}
   }
-  h+='<div class="mrow"><div class="avatar" style="background:'+color+'">'+av+'</div>'
-    +'<div class="mcol"><div class="mlabel"><span class="mname">'+esc(dn)+'</span>'
+  h+='<div class="mrow'+(isSelf?' self':'')+'"><div class="avatar" style="background:'+color+'">'+av+'</div>'
+    +'<div class="mcol'+(isSelf?' self':'')+'"><div class="mlabel"><span class="mname">'+esc(dn)+'</span>'
     +'<span class="mtime">'+esc(m.time||"")+'</span></div><div class="bubble'
-    +(((m.type==="image"||m.type==="video")&&m.att!=null)?" media":(m.type!=="text"&&m.type!=="file"?" tagonly":""))+'">'+inner+'</div>'+ocrExtra+'</div></div>';
+    +(isSelf?' self':"")+(((m.type==="image"||m.type==="video")&&m.att!=null)?" media":(m.type!=="text"&&m.type!=="file"?" tagonly":""))+'">'+inner+'</div>'+ocrExtra+'</div></div>';
 }
 document.getElementById("chat").innerHTML=h;
 var _tt=null;
@@ -2025,6 +2041,9 @@ def wxchat_share_page(sh, sid):
     wxchat_kick_ocr(sid)  # 服务重启丢掉的解析在这里兜底补跑
     chat = sh["chat"]
     names = load_wxnames(sh.get("owner", ""))
+    self_nick = names.get("__self__")
+    if self_nick and self_nick not in chat["participants"]:
+        self_nick = None
     display = {n: names[n] for n in chat["participants"] if names.get(n)}
     disp_parts = [display.get(n, n) for n in chat["participants"]]
     parts = "、".join(disp_parts[:8]) + ("等" if len(disp_parts) > 8 else "")
@@ -2054,11 +2073,12 @@ def wxchat_share_page(sh, sid):
             '</div><div class="chat" id="chat"></div>%s'
             '<div id="toast"></div>'
             '<style>%s</style>'
-            '<script>var CHAT=%s;var OCR=%s;var RNAMES=%s;var SID="%s";var PWD=%s;</script>'
+            '<script>var CHAT=%s;var OCR=%s;var RNAMES=%s;var SELF_NICK=%s;var SID="%s";var PWD=%s;</script>'
             '<script>%s</script></body></html>'
             % (html.escape(chat["title"]), html.escape(meta), sid, sh["pwd"],
                others_html, CHAT_PAGE_CSS, chat_js, ocr_js,
-               json.dumps(display, ensure_ascii=False).replace("</", "<\\/"), sid,
+               json.dumps(display, ensure_ascii=False).replace("</", "<\\/"),
+               json.dumps(self_nick), sid,
                json.dumps(str(sh["pwd"])), CHAT_RENDER_JS))
     return ("<!doctype html><html lang=\"zh\"><head><meta charset=\"utf-8\">"
             "<meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">"
@@ -2100,6 +2120,8 @@ if __name__ == "__main__":
             st = json.loads(p.read_text(encoding="utf-8"))
         except Exception:
             continue
+        if not isinstance(st, dict) or "task_id" not in st:
+            continue  # 非任务文件（如映射库）不参与迁移
         changed = False
         if st.get("status") in ("PENDING", "RUNNING"):
             st["status"] = "FAILED"

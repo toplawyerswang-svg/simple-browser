@@ -77,6 +77,11 @@
     <string name="wxchat_name_edit_msg">设置后，所有聊天记录分享中该昵称将显示为真名（含已生成的分享）；清空并确定则恢复显示昵称。</string>
     <string name="wxchat_name_hint">真实姓名</string>
     <string name="wxchat_name_saved">已保存，分享页实时生效</string>
+    <string name="wxchat_name_mark_me">标记为我方</string>
+    <string name="wxchat_name_unmark_me">取消我方标记</string>
+    <string name="wxchat_name_me_suffix">（我）</string>
+    <string name="wxchat_name_marked">已标记为我方：该昵称的消息按发出方展示</string>
+    <string name="wxchat_name_unmarked">已取消我方标记</string>
     <string name="asr_pill_batch_fmt">[%1$d/%2$d] %3$s</string>
     <string name="asr_failed_prefix">处理失败：</string>
     <string name="asr_batch_failed_list_fmt">以下 %1$d 个文件转写失败：\n\n%2$s</string>

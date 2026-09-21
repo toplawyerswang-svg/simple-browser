@@ -578,6 +578,7 @@ class SettingsActivity : AppCompatActivity() {
                 val j = AsrClient.listWxNameMappings(this)
                 val names = j.optJSONObject("names") ?: JSONObject()
                 val known = j.optJSONArray("known") ?: org.json.JSONArray()
+                val selfNick = names.optString("__self__", "")
                 val items = ArrayList<Pair<String, String>>()
                 for (i in 0 until known.length()) {
                     val n = known.optString(i)
@@ -590,12 +591,17 @@ class SettingsActivity : AppCompatActivity() {
                         return@runOnUiThread
                     }
                     val labels = items.map { (n, r) ->
-                        if (r.isEmpty()) n else getString(R.string.wxchat_name_row, n, r)
+                        val me = if (n == selfNick) getString(R.string.wxchat_name_me_suffix) else ""
+                        when {
+                            r.isNotEmpty() -> getString(R.string.wxchat_name_row, n, r) + me
+                            else -> n + me
+                        }
                     }
                     AlertDialog.Builder(this)
                         .setTitle(R.string.wxchat_names_title)
                         .setItems(labels.toTypedArray()) { _, which ->
-                            promptRealname(items[which].first, items[which].second)
+                            promptRealname(items[which].first, items[which].second,
+                                items[which].first == selfNick)
                         }
                         .setNegativeButton(android.R.string.cancel, null)
                         .show()
@@ -608,7 +614,7 @@ class SettingsActivity : AppCompatActivity() {
         }.start()
     }
 
-    private fun promptRealname(nickname: String, current: String) {
+    private fun promptRealname(nickname: String, current: String, isSelf: Boolean) {
         val input = EditText(this).apply {
             hint = getString(R.string.wxchat_name_hint)
             setText(current)
@@ -619,6 +625,25 @@ class SettingsActivity : AppCompatActivity() {
             .setMessage(getString(R.string.wxchat_name_edit_msg))
             .setView(input)
             .setNegativeButton(android.R.string.cancel, null)
+            .setNeutralButton(
+                if (isSelf) R.string.wxchat_name_unmark_me else R.string.wxchat_name_mark_me
+            ) { _, _ ->
+                Thread {
+                    try {
+                        AsrClient.setWxNameMapping(this, nickname, current, markSelf = !isSelf)
+                        runOnUiThread {
+                            if (!isFinishing && !isDestroyed) {
+                                Toast.makeText(this, if (isSelf) R.string.wxchat_name_unmarked
+                                else R.string.wxchat_name_marked, Toast.LENGTH_SHORT).show()
+                            }
+                        }
+                    } catch (e: Exception) {
+                        runOnUiThread {
+                            if (!isFinishing && !isDestroyed) Toast.makeText(this, asrErrorText(e), Toast.LENGTH_LONG).show()
+                        }
+                    }
+                }.start()
+            }
             .setPositiveButton(android.R.string.ok) { _, _ ->
                 val real = input.text.toString().trim()
                 Thread {
