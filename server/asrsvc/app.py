@@ -1626,6 +1626,68 @@ def _ocr_pdf_to_markdown(pdf_path):
         shutil.rmtree(work, ignore_errors=True)
 
 
+# ---- 微信昵称→真名映射（按用户隔离；分享页与 chat.json 渲染时实时应用） ----
+
+
+def _wxnames_path(user):
+    safe = re.sub(r"[^0-9A-Za-z_\-\u4e00-\u9fff]", "_", user)[:60]
+    return DATA / ("wxnames_%s.json" % safe)
+
+
+def load_wxnames(user):
+    p = _wxnames_path(user)
+    if p.exists():
+        try:
+            return json.loads(p.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return {}
+    return {}
+
+
+@app.get("/api/asr/wxchat/names")
+def wxchat_names():
+    """我的昵称→真名映射 + 历史分享中出现过的全部昵称（设置页管理用）。"""
+    user = authenticate()
+    if user is None:
+        return jsonify(error="unauthorized"), 401
+    names = load_wxnames(user)
+    known = []
+    for p in DATA.glob("*.share.json"):
+        try:
+            sh = json.loads(p.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        if sh.get("type") != "wxchat" or sh.get("owner") != user:
+            continue
+        for n in (sh.get("chat") or {}).get("participants") or []:
+            if n not in known:
+                known.append(n)
+    return jsonify(names=names, known=known)
+
+
+@app.post("/api/asr/wxchat/name")
+def wxchat_set_name():
+    """设置/清除（realname 空）昵称的真名映射；实时作用于所有分享展示。"""
+    user = authenticate()
+    if user is None:
+        return jsonify(error="unauthorized"), 401
+    nickname = (request.form.get("nickname") or "").strip()[:100]
+    realname = (request.form.get("realname") or "").strip()[:100]
+    if not nickname:
+        return jsonify(error="nickname required"), 400
+    names = load_wxnames(user)
+    if realname:
+        names[nickname] = realname
+    else:
+        names.pop(nickname, None)
+    p = _wxnames_path(user)
+    tmp = DATA / (p.name + ".tmp")
+    tmp.write_text(json.dumps(names, ensure_ascii=False), encoding="utf-8")
+    os.replace(tmp, p)
+    print("wxchat name set by", user, ":", nickname, "->", realname or "(clear)", flush=True)
+    return jsonify(saved=True, names=names)
+
+
 _ocr_lock = threading.Lock()
 _ocr_running = set()
 
@@ -1823,7 +1885,11 @@ def wxchat_json(sid):
     root = request.host_url.replace("http://", "https://").rstrip("/")
     chat = json.loads(json.dumps(sh["chat"], ensure_ascii=False))  # 深拷贝再补 URL
     wxchat_kick_ocr(sid)  # 服务重启丢掉的解析在这里兜底补跑
+    names = load_wxnames(sh.get("owner", ""))
+    realnames = {n: names[n] for n in chat.get("participants") or [] if names.get(n)}
     for m in chat["messages"]:
+        if m["sender"] in realnames:
+            m["realname"] = realnames[m["sender"]]
         if "att" in m and m["att"] < len(sh["attachments"]):
             a = sh["attachments"][m["att"]]
             if "path" in a:
@@ -1843,7 +1909,7 @@ def wxchat_json(sid):
         atts.append(item)
     chat.pop("attachments")  # 用补好 URL 的 atts 替代原始附件表
     return jsonify(title=chat.pop("title"), source=chat.pop("source"),
-                   attachments=atts,
+                   attachments=atts, realnames=realnames,
                    expires_at=sh["expires_at"], **chat)
 
 
@@ -1915,7 +1981,8 @@ var h="";
 for(var i=0;i<CHAT.messages.length;i++){
   var m=CHAT.messages[i];
   var color=PALETTE[cmap[m.sender]%PALETTE.length];
-  var av=esc((m.sender||"?").substring(0,1));
+  var dn=RNAMES[m.sender]||m.sender;
+  var av=esc(dn.substring(0,1));
   var inner;
   if(m.type==="file"){
     var dl=m.att!=null?'<a class="fdl" href="/s/'+SID+'/file/'+m.att+'?pwd='+encodeURIComponent(PWD)+'">下载</a>':"";
@@ -1936,7 +2003,7 @@ for(var i=0;i<CHAT.messages.length;i++){
     else if(A.ocr_status==="pending"){ocrExtra='<div class="ocrwrap"><a class="ocrbtn" style="color:#999;pointer-events:none">解析中，稍后刷新可见</a></div>';}
   }
   h+='<div class="mrow"><div class="avatar" style="background:'+color+'">'+av+'</div>'
-    +'<div class="mcol"><div class="mlabel"><span class="mname">'+esc(m.sender)+'</span>'
+    +'<div class="mcol"><div class="mlabel"><span class="mname">'+esc(dn)+'</span>'
     +'<span class="mtime">'+esc(m.time||"")+'</span></div><div class="bubble'
     +(((m.type==="image"||m.type==="video")&&m.att!=null)?" media":(m.type!=="text"&&m.type!=="file"?" tagonly":""))+'">'+inner+'</div>'+ocrExtra+'</div></div>';
 }
@@ -1957,7 +2024,10 @@ def wxchat_share_page(sh, sid):
     """微信聊天记录分享页：原生风格的左侧气泡流 + 附件卡片 + Agent JSON 入口。"""
     wxchat_kick_ocr(sid)  # 服务重启丢掉的解析在这里兜底补跑
     chat = sh["chat"]
-    parts = "、".join(chat["participants"][:8]) + ("等" if len(chat["participants"]) > 8 else "")
+    names = load_wxnames(sh.get("owner", ""))
+    display = {n: names[n] for n in chat["participants"] if names.get(n)}
+    disp_parts = [display.get(n, n) for n in chat["participants"]]
+    parts = "、".join(disp_parts[:8]) + ("等" if len(disp_parts) > 8 else "")
     meta = "%d 条消息 · %s · %s ~ %s · 轻舟浏览器转存" % (
         chat["message_count"], parts,
         chat.get("time_start") or "", chat.get("time_end") or "")
@@ -1984,10 +2054,11 @@ def wxchat_share_page(sh, sid):
             '</div><div class="chat" id="chat"></div>%s'
             '<div id="toast"></div>'
             '<style>%s</style>'
-            '<script>var CHAT=%s;var OCR=%s;var SID="%s";var PWD=%s;</script>'
+            '<script>var CHAT=%s;var OCR=%s;var RNAMES=%s;var SID="%s";var PWD=%s;</script>'
             '<script>%s</script></body></html>'
             % (html.escape(chat["title"]), html.escape(meta), sid, sh["pwd"],
-               others_html, CHAT_PAGE_CSS, chat_js, ocr_js, sid,
+               others_html, CHAT_PAGE_CSS, chat_js, ocr_js,
+               json.dumps(display, ensure_ascii=False).replace("</", "<\\/"), sid,
                json.dumps(str(sh["pwd"])), CHAT_RENDER_JS))
     return ("<!doctype html><html lang=\"zh\"><head><meta charset=\"utf-8\">"
             "<meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">"

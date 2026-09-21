@@ -513,6 +513,16 @@
                         android:textStyle="bold" />
 
                     <Button
+                        android:id="@+id/wxchat_names_btn"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:minHeight="0dp"
+                        android:paddingStart="12dp"
+                        android:paddingEnd="12dp"
+                        android:textSize="13sp"
+                        android:text="@string/wxchat_names_btn" />
+
+                    <Button
                         android:id="@+id/wxchat_refresh"
                         android:layout_width="wrap_content"
                         android:layout_height="wrap_content"

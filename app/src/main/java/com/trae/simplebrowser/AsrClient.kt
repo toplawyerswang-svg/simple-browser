@@ -327,6 +327,35 @@ object AsrClient {
         checkCode(code, body)
     }
 
+    /** 微信昵称→真名映射与历史分享中出现过的全部昵称。names: {昵称:真名}，known: 昵称数组。 */
+    fun listWxNameMappings(context: Context): JSONObject {
+        val conn = connection(context, "$BASE_URL/wxchat/names")
+        val code = conn.responseCode
+        val body = readBody(conn, code)
+        checkCode(code, body)
+        return JSONObject(body)
+    }
+
+    /** 设置（realname 空=清除）微信昵称的真名映射，实时作用于所有分享展示。 */
+    fun setWxNameMapping(context: Context, nickname: String, realname: String) {
+        val conn = (URL("$BASE_URL/wxchat/name").openConnection() as HttpURLConnection).apply {
+            requestMethod = "POST"
+            connectTimeout = 15000
+            readTimeout = 20000
+            doOutput = true
+            setRequestProperty("X-LZ-Token", token(context))
+            setRequestProperty("Content-Type", "application/x-www-form-urlencoded")
+        }
+        conn.outputStream.use { os ->
+            val body = "nickname=" + java.net.URLEncoder.encode(nickname, "UTF-8") +
+                "&realname=" + java.net.URLEncoder.encode(realname, "UTF-8")
+            os.write(body.toByteArray(Charsets.UTF_8))
+        }
+        val code = conn.responseCode
+        val body = readBody(conn, code)
+        checkCode(code, body)
+    }
+
     // ------------------------------------------------------------ 内部
 
     private fun token(context: Context): String = AppPrefs.getAsrToken(context)

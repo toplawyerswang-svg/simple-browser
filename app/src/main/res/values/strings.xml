@@ -68,6 +68,15 @@
     <string name="wxchat_delete_title">删除分享</string>
     <string name="wxchat_delete_confirm">确定删除「%1$s」的分享？删除后链接立即失效，服务器上的附件一并删除。</string>
     <string name="wxchat_deleted">分享已删除</string>
+    <!-- 微信昵称→真名映射 -->
+    <string name="wxchat_names_btn">昵称真名</string>
+    <string name="wxchat_names_title">微信昵称 → 真名</string>
+    <string name="wxchat_names_empty">暂无可设置的昵称。先转存一份聊天记录，再来设置真名。</string>
+    <string name="wxchat_name_row">%1$s　→　%2$s</string>
+    <string name="wxchat_name_edit_title">设置「%1$s」的真名</string>
+    <string name="wxchat_name_edit_msg">设置后，所有聊天记录分享中该昵称将显示为真名（含已生成的分享）；清空并确定则恢复显示昵称。</string>
+    <string name="wxchat_name_hint">真实姓名</string>
+    <string name="wxchat_name_saved">已保存，分享页实时生效</string>
     <string name="asr_pill_batch_fmt">[%1$d/%2$d] %3$s</string>
     <string name="asr_failed_prefix">处理失败：</string>
     <string name="asr_batch_failed_list_fmt">以下 %1$d 个文件转写失败：\n\n%2$s</string>

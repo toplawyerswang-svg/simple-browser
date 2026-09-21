@@ -28,6 +28,7 @@ import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.ContextCompat
 import com.google.android.material.tabs.TabLayout
+import org.json.JSONObject
 import com.trae.simplebrowser.core.AdBlockEngine
 import com.trae.simplebrowser.core.DownloadKind
 import com.trae.simplebrowser.core.DownloadRecord
@@ -567,6 +568,75 @@ class SettingsActivity : AppCompatActivity() {
         }
 
         binding.wxchatRefresh.setOnClickListener { loadWxShares() }
+        binding.wxchatNamesBtn.setOnClickListener { showNameMappingDialog() }
+    }
+
+    /** 昵称→真名管理：列出历史分享中出现过的微信昵称，逐个设置真名（参考音视频说话人标注）。 */
+    private fun showNameMappingDialog() {
+        Thread {
+            try {
+                val j = AsrClient.listWxNameMappings(this)
+                val names = j.optJSONObject("names") ?: JSONObject()
+                val known = j.optJSONArray("known") ?: org.json.JSONArray()
+                val items = ArrayList<Pair<String, String>>()
+                for (i in 0 until known.length()) {
+                    val n = known.optString(i)
+                    if (n.isNotEmpty()) items.add(n to names.optString(n, ""))
+                }
+                runOnUiThread {
+                    if (isFinishing || isDestroyed) return@runOnUiThread
+                    if (items.isEmpty()) {
+                        Toast.makeText(this, R.string.wxchat_names_empty, Toast.LENGTH_SHORT).show()
+                        return@runOnUiThread
+                    }
+                    val labels = items.map { (n, r) ->
+                        if (r.isEmpty()) n else getString(R.string.wxchat_name_row, n, r)
+                    }
+                    AlertDialog.Builder(this)
+                        .setTitle(R.string.wxchat_names_title)
+                        .setItems(labels.toTypedArray()) { _, which ->
+                            promptRealname(items[which].first, items[which].second)
+                        }
+                        .setNegativeButton(android.R.string.cancel, null)
+                        .show()
+                }
+            } catch (e: Exception) {
+                runOnUiThread {
+                    if (!isFinishing && !isDestroyed) Toast.makeText(this, asrErrorText(e), Toast.LENGTH_LONG).show()
+                }
+            }
+        }.start()
+    }
+
+    private fun promptRealname(nickname: String, current: String) {
+        val input = EditText(this).apply {
+            hint = getString(R.string.wxchat_name_hint)
+            setText(current)
+            setSingleLine(true)
+        }
+        AlertDialog.Builder(this)
+            .setTitle(getString(R.string.wxchat_name_edit_title, nickname))
+            .setMessage(getString(R.string.wxchat_name_edit_msg))
+            .setView(input)
+            .setNegativeButton(android.R.string.cancel, null)
+            .setPositiveButton(android.R.string.ok) { _, _ ->
+                val real = input.text.toString().trim()
+                Thread {
+                    try {
+                        AsrClient.setWxNameMapping(this, nickname, real)
+                        runOnUiThread {
+                            if (!isFinishing && !isDestroyed) {
+                                Toast.makeText(this, R.string.wxchat_name_saved, Toast.LENGTH_SHORT).show()
+                            }
+                        }
+                    } catch (e: Exception) {
+                        runOnUiThread {
+                            if (!isFinishing && !isDestroyed) Toast.makeText(this, asrErrorText(e), Toast.LENGTH_LONG).show()
+                        }
+                    }
+                }.start()
+            }
+            .show()
     }
 
     private fun wxMetaText(item: WxShareItem): String {
