@@ -630,13 +630,13 @@ class SettingsActivity : AppCompatActivity() {
         Toast.makeText(this, R.string.asr_share_copied, Toast.LENGTH_SHORT).show()
     }
 
-    /** 点击条目：在浏览器里打开分享页。 */
+    /** 点击条目：在独立任务里打开分享页（singleTask 主页会清掉设置页，
+     *  MULTIPLE_TASK 让浏览页压在新任务上，返回键回到本页且标签状态保留）。 */
     private fun openWxShare(item: WxShareItem) {
         startActivity(
             Intent(this, MainActivity::class.java)
-                .setFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP)
+                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_MULTIPLE_TASK)
                 .setData(Uri.parse(item.url)))
-        finish()
     }
 
     private fun confirmDeleteWxShare(item: WxShareItem) {
