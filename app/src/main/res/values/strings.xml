@@ -41,6 +41,23 @@
     <string name="asr_progress_upload">正在上传 %d%%</string>
     <string name="asr_progress_stage_recognizing">识别中，可先返回浏览</string>
     <string name="asr_progress_preparing">正在准备处理…</string>
+    <!-- 微信聊天记录转存 -->
+    <string name="wxchat_toast_started">已开始转存聊天记录，请保持网络畅通</string>
+    <string name="wxchat_progress_title">聊天记录转存</string>
+    <string name="wxchat_pill_copy">正在读取聊天记录…</string>
+    <string name="wxchat_pill_upload">正在上传聊天记录 %d%%</string>
+    <string name="wxchat_err_read">无法读取分享的聊天记录内容</string>
+    <string name="wxchat_err_empty">分享的聊天记录内容为空</string>
+    <string name="wxchat_notif_title">聊天记录转存</string>
+    <string name="wxchat_notif_done_one">聊天记录已转存，点击查看链接</string>
+    <string name="wxchat_notif_done_multi">%1$d 份聊天记录已转存</string>
+    <string name="wxchat_result_title">聊天记录已转存</string>
+    <string name="wxchat_result_item">%1$s\n%2$s\n有效期至 %3$s（链接已含提取码，AI 助手可读取解析结果）</string>
+    <string name="wxchat_expire_fallback">30 天后</string>
+    <string name="wxchat_share_text">【聊天记录】%1$s\n%2$s</string>
+    <string name="wxchat_btn_copy">复制链接</string>
+    <string name="wxchat_btn_open">打开</string>
+    <string name="wxchat_btn_share">转发</string>
     <string name="asr_pill_batch_fmt">[%1$d/%2$d] %3$s</string>
     <string name="asr_failed_prefix">处理失败：</string>
     <string name="asr_batch_failed_list_fmt">以下 %1$d 个文件转写失败：\n\n%2$s</string>

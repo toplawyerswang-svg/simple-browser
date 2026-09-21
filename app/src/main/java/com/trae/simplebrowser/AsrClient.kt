@@ -234,6 +234,75 @@ object AsrClient {
         return if (aMs >= 0 && bMs > aMs) "$base?a=$aMs&b=$bMs&token=$t" else "$base?token=$t"
     }
 
+    /** 微信聊天记录转存分享：服务端解析 zip 后直接返回分享链接（30 天有效）。 */
+    data class WxChatShare(
+        val shareId: String,
+        val pwd: String,
+        val url: String,
+        val validityHours: Int,
+        val expiresAt: Long
+    )
+
+    /** 上传微信聊天记录 zip 建分享，onProgress 回调上传进度 0..100。 */
+    fun uploadWxChat(context: Context, zip: File, displayName: String?,
+                     onProgress: (Int) -> Unit): WxChatShare {
+        val token = token(context)
+        val boundary = "lzbr" + System.currentTimeMillis()
+        val conn = (URL("$BASE_URL/wxchat").openConnection() as HttpURLConnection).apply {
+            requestMethod = "POST"
+            connectTimeout = 15000
+            readTimeout = 600000
+            doOutput = true
+            setRequestProperty("X-LZ-Token", token)
+            setRequestProperty("Content-Type", "multipart/form-data; boundary=$boundary")
+        }
+        val total = zip.length()
+        conn.outputStream.use { os ->
+            fun text(s: String) = os.write(s.toByteArray(Charsets.UTF_8))
+            text("--$boundary\r\n")
+            text("Content-Disposition: form-data; name=\"file\"; filename=\"${zip.name}\"\r\n")
+            text("Content-Type: application/zip\r\n\r\n")
+            zip.inputStream().use { ins ->
+                val buf = ByteArray(64 * 1024)
+                var sent = 0L
+                var lastPct = -1
+                while (true) {
+                    val n = ins.read(buf)
+                    if (n < 0) break
+                    os.write(buf, 0, n)
+                    sent += n
+                    if (total > 0) {
+                        val pct = (sent * 100 / total).toInt()
+                        if (pct != lastPct) {
+                            lastPct = pct
+                            onProgress(pct)
+                        }
+                    }
+                }
+            }
+            text("\r\n--$boundary\r\n")
+            if (!displayName.isNullOrBlank()) {
+                text("Content-Disposition: form-data; name=\"display_name\"\r\n")
+                text("Content-Type: text/plain; charset=utf-8\r\n\r\n")
+                text(displayName.trim().replace(Regex("[\\p{Cntrl}]"), "").take(200))
+                text("\r\n")
+            }
+            text("--$boundary--\r\n")
+        }
+        val code = conn.responseCode
+        val body = readBody(conn, code)
+        if (code == 401) throw AsrAuthException()
+        if (code !in 200..299) throw IllegalStateException("服务器返回 $code: ${body.take(200)}")
+        val j = JSONObject(body)
+        return WxChatShare(
+            shareId = j.getString("share_id"),
+            pwd = j.getString("pwd"),
+            url = j.getString("url"),
+            validityHours = j.optInt("validity_hours", 720),
+            expiresAt = j.optLong("expires_at", 0L)
+        )
+    }
+
     // ------------------------------------------------------------ 内部
 
     private fun token(context: Context): String = AppPrefs.getAsrToken(context)

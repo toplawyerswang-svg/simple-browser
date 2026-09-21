@@ -491,8 +491,8 @@ class MainActivity : AppCompatActivity() {
         handleIncomingShare(intent)
     }
 
-    /** 接收外部分享（SEND / SEND_MULTIPLE）：逐项识别出音视频文件后一并进入转写流程，
-     *  其余类型本期仅提示已收到 */
+    /** 接收外部分享（SEND / SEND_MULTIPLE）：微信聊天记录 zip 优先转存；
+     *  其余逐项识别音视频进入转写流程，无匹配类型仅提示已收到 */
     private fun handleIncomingShare(intent: Intent?) {
         val action = intent?.action ?: return
         if (action != Intent.ACTION_SEND && action != Intent.ACTION_SEND_MULTIPLE) return
@@ -504,15 +504,24 @@ class MainActivity : AppCompatActivity() {
             else -> intent.getParcelableArrayListExtra<Uri>(Intent.EXTRA_STREAM)
                 ?: listOfNotNull(intent.getParcelableExtra(Intent.EXTRA_STREAM))
         }
+        // 微信合并转发分享固定为「聊天记录_*.zip」，初判文件名，服务端解压再终判
+        val wxItems = streams.filter { WxChatShareFlow.isWxChatZip(this, it) }
+            .map { AsrShareFlow.MediaItem(it, "application/zip") }
+        if (wxItems.isNotEmpty()) {
+            WxChatShareFlow.offer(this, wxItems)
+            if (wxItems.size == streams.size) return
+        }
         // 逐项核实音视频类型：微信多文件分享常把 intent 类型标成通配，不能只看 intent.mime
-        val mediaItems = streams.mapNotNull { uri ->
+        val mediaItems = streams.filter { it !in wxItems.map { w -> w.uri } }.mapNotNull { uri ->
             AsrShareFlow.resolveMediaMime(this, uri, mime)?.let { AsrShareFlow.MediaItem(uri, it) }
         }
         if (mediaItems.isNotEmpty()) {
             AsrShareFlow.offerAudioProcessing(this, mediaItems)
             return
         }
-        Toast.makeText(this, R.string.share_received_toast, Toast.LENGTH_SHORT).show()
+        if (wxItems.isEmpty()) {
+            Toast.makeText(this, R.string.share_received_toast, Toast.LENGTH_SHORT).show()
+        }
     }
 
     private val gestureTracker by lazy {
@@ -646,6 +655,7 @@ class MainActivity : AppCompatActivity() {
         // 转写批次在服务里跑：页面回前台时补展示后台完成的结果/失败汇总
         AsrShareFlow.activityResumed = true
         AsrShareFlow.drainPending(this)
+        WxChatShareFlow.drainPending(this)
         // 仅恢复当前标签的渲染与计时器；后台标签保持暂停
         currentWebView.onResume()
         currentWebView.resumeTimers()

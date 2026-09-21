@@ -32,7 +32,7 @@ object AsrShareFlow {
     private const val POLL_MAX_MS = 2 * 60 * 60 * 1000L
     private const val NOTIF_CHANNEL_PROGRESS = "asr_progress"
     private const val NOTIF_CHANNEL_RESULT = "asr_result"
-    private const val NOTIF_ID_PROGRESS = 2001
+    const val NOTIF_ID_PROGRESS = 2001
     private const val NOTIF_ID_RESULT = 2002
     private var lastNotifyAt = 0L
     private var lastSuccessName: String? = null
@@ -393,7 +393,7 @@ object AsrShareFlow {
         return "$name：${e.message ?: e.toString()}"
     }
 
-    private fun queryDisplayName(context: Context, uri: Uri): String? {
+    fun queryDisplayName(context: Context, uri: Uri): String? {
         var displayName: String? = null
         runCatching {
             context.contentResolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)?.use { c ->
