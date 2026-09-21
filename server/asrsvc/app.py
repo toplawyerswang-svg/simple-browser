@@ -1,0 +1,2038 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""轻舟浏览器录音转写服务 (asrsvc)
+
+流程：轻舟浏览器上传音频 -> 本服务转存百炼临时OSS -> 提交 Fun-ASR 录音文件识别
+（异步任务，轮询） -> 拉取识别JSON -> 按说话人合并分段 -> 可选 qwen LLM 将方言/口语
+改写为标准普通话 -> APP 轮询取结果。
+
+声纹：转写完成后（音频删除前）为每个说话人提取声纹向量（CAM++/ERes2Net, sherpa-onnx
+CPU 推理）与基频性别判定；与声纹库比对自动标注人名（高置信直接标，中置信加"？"）。
+用户在结果页标注后，声纹样本归档到对应人名下，越用越准。
+
+分享：对已完成的任务可生成带提取码的分享链接（/s/<share_id>?pwd=XXXX），
+链接 30 天有效；查看页无需 Token，但必须携带正确提取码。
+
+安全：业务接口要求 X-LZ-Token 头；本地音频在任务结束（成功或失败）后立即删除；
+百炼临时 OSS 为私有 ACL，48 小时自动清理。声纹向量仅存本机。
+"""
+import hmac
+import html
+import json
+import math
+import os
+import re
+import secrets
+import subprocess
+import tempfile
+import threading
+import time
+import uuid
+import zipfile
+from pathlib import Path, PurePosixPath
+
+import numpy as np
+import requests
+from flask import Response, Flask, jsonify, request, send_file
+
+BASE = Path(__file__).resolve().parent
+CFG = json.loads((BASE / "config.json").read_text(encoding="utf-8"))
+DATA = BASE / "data"
+DATA.mkdir(exist_ok=True)
+VP_DIR = BASE / "voiceprints"
+VP_DIR.mkdir(exist_ok=True)
+MODEL_PATH = BASE / "models" / CFG.get("speaker_model", "3dspeaker_speech_eres2netv2_sv_zh-cn_16k-common.onnx")
+
+TOKEN = CFG["token"]  # 旧版全局令牌，已停用；现按 users.json 内多用户令牌鉴权
+USERS_FILE = BASE / "users.json"
+AUTH_WINDOW_SECONDS = 900     # 失败计数窗口15分钟
+AUTH_MAX_FAILS = 8            # 窗口内失败超过该次数即临时封禁该IP
+ASR_MODEL = CFG.get("asr_model", "fun-asr")
+LLM_MODEL = CFG.get("llm_model", "qwen-flash")
+MAAS = CFG["maas_host"].rstrip("/")
+DASH = CFG.get("dashscope_host", "https://dashscope.aliyuncs.com").rstrip("/")
+API_KEY = CFG["api_key"]
+DS_BASE = CFG.get("deepseek_base", "https://api.deepseek.com").rstrip("/")
+DS_KEY = CFG.get("deepseek_api_key", "")
+DS_MODEL = CFG.get("deepseek_model", "deepseek-flash")
+SHARE_BASE = CFG.get("share_base_url", "https://api.orientlaw.cn/s").rstrip("/")
+MAX_AUDIO_MB = 600
+ALLOWED_EXT = {".m4a", ".mp3", ".wav", ".aac", ".amr", ".ogg", ".flac", ".wma", ".opus", ".3gp"}
+VIDEO_EXT = {".mp4", ".mov", ".mkv", ".avi", ".webm", ".m4v", ".flv"}  # 视频先抽音轨再识别
+AUDIO_MIME = {".m4a": "audio/mp4", ".mp4": "audio/mp4", ".mov": "audio/mp4",
+              ".mkv": "audio/mp4", ".avi": "audio/mp4", ".webm": "audio/webm",
+              ".m4v": "audio/mp4", ".flv": "audio/mp4", ".aac": "audio/aac",
+              ".mp3": "audio/mpeg", ".wav": "audio/x-wav", ".amr": "audio/amr",
+              ".ogg": "audio/ogg", ".opus": "audio/ogg", ".flac": "audio/flac",
+              ".wma": "audio/x-ms-wma", ".3gp": "audio/3gpp"}
+AUDIO_RETENTION_SECONDS = 30 * 24 * 3600   # 成功任务的音频保留30天（与分享链接同寿命），过期自动清理
+SHARE_DEFAULT_HOURS = 24    # 分享有效期默认24小时
+SHARE_DEFAULT_MAX_OPENS = 5  # 可打开次数默认5次（0=不限）
+MAX_SLICE_MS = 600 * 1000                  # 单次回听切片上限10分钟
+PWD_ALPHABET = "23456789ABCDEFGHJKMNPQRSTUVWXYZ"
+PWD_LENGTH = 20  # 分享提取码长度（链接内自动携带，手动输入仅作兜底）
+VP_AUTO_THRESHOLD = 0.72     # 高置信：直接标人名
+VP_TENTATIVE_THRESHOLD = 0.60  # 中置信：标"名字？"待确认
+VP_MAX_EMBEDDINGS = 5        # 每人滚动保留的声纹样本数
+SAMPLE_RATE = 16000
+
+app = Flask(__name__)
+app.config["MAX_CONTENT_LENGTH"] = MAX_AUDIO_MB * 1024 * 1024
+
+_lock = threading.Lock()
+_vp_lock = threading.Lock()
+_embedder = None
+_embedder_lock = threading.Lock()
+
+
+# ---------------------------------------------------------------- 基础存储
+
+def load_task(tid):
+    p = DATA / (tid + ".json")
+    if p.exists():
+        return json.loads(p.read_text(encoding="utf-8"))
+    return None
+
+
+def save_task(st):
+    """原子落盘：先写临时文件再 rename，避免并发读到半截 JSON。"""
+    with _lock:
+        p = DATA / (st["task_id"] + ".json")
+        tmp = DATA / (st["task_id"] + ".json.tmp")
+        tmp.write_text(json.dumps(st, ensure_ascii=False), encoding="utf-8")
+        os.replace(tmp, p)
+
+
+def save_share(share):
+    with _lock:
+        p = DATA / (share["share_id"] + ".share.json")
+        tmp = DATA / (share["share_id"] + ".share.json.tmp")
+        tmp.write_text(json.dumps(share, ensure_ascii=False), encoding="utf-8")
+        os.replace(tmp, p)
+
+
+def load_share(sid):
+    p = DATA / (sid + ".share.json")
+    if not p.exists():
+        return None
+    try:
+        sh = json.loads(p.read_text(encoding="utf-8"))
+    except ValueError:
+        return None
+    if time.time() > sh.get("expires_at", 0):
+        return None
+    return sh
+
+
+def load_users():
+    """users.json: {"users":[{"user":"用户A","token":"..."},...]} -> {token: user}"""
+    try:
+        data = json.loads(USERS_FILE.read_text(encoding="utf-8"))
+        return {u.get("token", ""): u.get("user", "") for u in data.get("users", [])
+                if u.get("token") and u.get("user")}
+    except (OSError, ValueError, AttributeError):
+        return {}
+
+
+_auth_fails = {}
+
+
+def client_ip():
+    return request.headers.get("X-Real-IP") or request.remote_addr or "unknown"
+
+
+def auth_blocked():
+    entry = _auth_fails.get(client_ip())
+    return bool(entry and entry[0] >= AUTH_MAX_FAILS
+                and time.time() - entry[1] < AUTH_WINDOW_SECONDS)
+
+
+def auth_record_failure():
+    ip = client_ip()
+    now = time.time()
+    entry = _auth_fails.get(ip, [0, now])
+    if now - entry[1] > AUTH_WINDOW_SECONDS:
+        entry = [0, now]
+    entry[0] += 1
+    entry[1] = now
+    _auth_fails[ip] = entry
+    time.sleep(0.2 + secrets.randbelow(40) / 100.0)  # 拖慢在线枚举
+
+
+def authenticate():
+    """恒时比较校验令牌（请求头 X-LZ-Token 或查询参数 token）；成功返回用户名，失败计一次失败并返回 None。"""
+    if auth_blocked():
+        return None
+    token = request.headers.get("X-LZ-Token", "") or request.args.get("token", "")
+    for t, user in load_users().items():
+        if hmac.compare_digest(token.encode(), t.encode()):
+            _auth_fails.pop(client_ip(), None)
+            return user
+    auth_record_failure()
+    return None
+
+
+def require_user():
+    """带用户上下文的鉴权：返回用户名或 None（调用方返回401）。"""
+    return authenticate()
+
+
+def fmt_ms(ms):
+    s = int(round((ms or 0) / 1000.0))
+    h, rem = divmod(s, 3600)
+    m, sec = divmod(rem, 60)
+    return "%02d:%02d:%02d" % (h, m, sec) if h else "%02d:%02d" % (m, sec)
+
+
+def api_headers(extra=None):
+    h = {"Authorization": "Bearer " + API_KEY}
+    if extra:
+        h.update(extra)
+    return h
+
+
+# ---------------------------------------------------------------- 百炼 ASR
+
+def get_upload_policy():
+    r = requests.get(DASH + "/api/v1/uploads",
+                     params={"action": "getPolicy", "model": ASR_MODEL},
+                     headers=api_headers(), timeout=30)
+    r.raise_for_status()
+    return r.json()["data"]
+
+
+def upload_to_oss(pol, path, name):
+    key = pol["upload_dir"] + "/" + name
+    with open(path, "rb") as f:
+        r = requests.post(pol["upload_host"],
+                          data={"OSSAccessKeyId": pol["oss_access_key_id"],
+                                "Signature": pol["signature"],
+                                "policy": pol["policy"],
+                                "key": key,
+                                "x-oss-object-acl": pol.get("x_oss_object_acl", "private"),
+                                "x-oss-forbid-overwrite": pol.get("x_oss_forbid_overwrite", "true"),
+                                "success_action_status": "200"},
+                          files={"file": (name, f)}, timeout=1800)
+    if r.status_code != 200:
+        raise RuntimeError("OSS upload HTTP %d: %s" % (r.status_code, r.text[:200]))
+    return "oss://" + key
+
+
+def submit_asr(oss_url, diarize):
+    body = {"model": ASR_MODEL,
+            "input": {"file_urls": [oss_url]},
+            # 新版 maas 域名下 parameters 必填（空也要给对象）
+            "parameters": {"diarization_enabled": bool(diarize), "language_hints": ["zh"]}}
+    r = requests.post(MAAS + "/api/v1/services/audio/asr/transcription", json=body,
+                      headers=api_headers({"X-DashScope-Async": "enable",
+                                           "X-DashScope-OssResourceResolve": "enable"}),
+                      timeout=60)
+    j = r.json()
+    tid = (j.get("output") or {}).get("task_id")
+    if not tid:
+        raise RuntimeError("提交失败: " + r.text[:300])
+    return tid
+
+
+def poll_asr(dash_tid, st):
+    deadline = time.time() + 7200
+    while time.time() < deadline:
+        r = requests.get(MAAS + "/api/v1/tasks/" + dash_tid, headers=api_headers(), timeout=30)
+        out = (r.json().get("output") or {})
+        stst = out.get("task_status")
+        st["stage"] = "识别中(" + str(stst) + ")"
+        if stst == "SUCCEEDED":
+            results = out.get("results") or []
+            if not results or not results[0].get("transcription_url"):
+                raise RuntimeError("无识别结果: " + json.dumps(out, ensure_ascii=False)[:300])
+            return results[0]["transcription_url"]
+        if stst == "FAILED":
+            raise RuntimeError("ASR失败: %s %s" % (out.get("code"), out.get("message")))
+        save_task(st)
+        time.sleep(5)
+    raise RuntimeError("ASR轮询超时(2h)")
+
+
+def build_segments(tj, with_speaker):
+    """按说话人合并连续句子（间隔<=1.5s 视为连续发言），时间取段落起止。"""
+    segments = []
+    cur = None
+    for tr in tj.get("transcripts", []):
+        for sent in tr.get("sentences", []):
+            spk = sent.get("speaker_id", 0) if with_speaker else 0
+            if cur and cur["speaker"] == spk and sent["begin_time"] - cur["end_ms"] <= 1500:
+                cur["text"] += sent["text"]
+                cur["end_ms"] = sent["end_time"]
+            else:
+                if cur:
+                    segments.append(cur)
+                cur = {"speaker": spk, "begin_ms": sent["begin_time"],
+                       "end_ms": sent["end_time"], "text": sent["text"]}
+    if cur:
+        segments.append(cur)
+    for seg in segments:
+        seg["begin"] = fmt_ms(seg["begin_ms"])
+        seg["end"] = fmt_ms(seg["end_ms"])
+    return segments
+
+
+def to_mandarin(segments):
+    """分批调 LLM 把方言/口语改写为标准普通话，行号映射防止串行。"""
+    out = []
+    bucket = 25
+    for i in range(0, len(segments), bucket):
+        chunk = segments[i:i + bucket]
+        lines = "\n".join("[%d]%s" % (j, s["text"]) for j, s in enumerate(chunk))
+        prompt = ("下面是一段录音转写文本（可能含方言、口语、语气词）。请把每一行改写为标准普通话书面语，"
+                  "保留原意、人名、地名、数字与条款信息，删除无意义的语气词（嗯、啊、呃等）。"
+                  "输出格式必须与输入一致：每行以[序号]开头，一行一条，不要输出任何其他说明。\n\n" + lines)
+        r = requests.post(MAAS + "/compatible-mode/v1/chat/completions",
+                          headers=api_headers(),
+                          json={"model": LLM_MODEL, "temperature": 0.1,
+                                "messages": [{"role": "user", "content": prompt}]},
+                          timeout=300)
+        r.raise_for_status()
+        content = r.json()["choices"][0]["message"]["content"]
+        mapped = {}
+        for line in content.splitlines():
+            m = re.match(r"\s*\[(\d+)\]\s*(.+)", line)
+            if m:
+                mapped[int(m.group(1))] = m.group(2).strip()
+        for j, s in enumerate(chunk):
+            s2 = dict(s)
+            if mapped.get(j):
+                s2["text"] = mapped[j]
+            out.append(s2)
+    return out
+
+
+# ---------------------------------------------------------------- 声纹与性别
+
+def get_embedder():
+    """懒加载声纹嵌入模型（sherpa-onnx CPU）。"""
+    global _embedder
+    with _embedder_lock:
+        if _embedder is None:
+            import sherpa_onnx
+            config = sherpa_onnx.SpeakerEmbeddingExtractorConfig(
+                model=str(MODEL_PATH), num_threads=2)
+            _embedder = sherpa_onnx.SpeakerEmbeddingExtractor(config)
+        return _embedder
+
+
+def read_wav_mono16k(path):
+    """读 wav 为 float32 numpy（-1..1），仅支持 16k 单声道（我们自己转的）。"""
+    import wave
+    w = wave.open(str(path), "rb")
+    if w.getframerate() != SAMPLE_RATE or w.getnchannels() != 1:
+        w.close()
+        raise RuntimeError("wav 格式不符")
+    n = w.getnframes()
+    raw = w.readframes(n)
+    w.close()
+    return np.frombuffer(raw, dtype=np.int16).astype(np.float32) / 32768.0
+
+
+def embed_chunk(extractor, chunk):
+    """单段音频 -> L2 归一化声纹向量。"""
+    stream = extractor.create_stream()
+    stream.accept_waveform(SAMPLE_RATE, [float(x) for x in chunk])
+    stream.input_finished()
+    v = np.asarray(extractor.compute(stream), dtype=np.float32)
+    norm = float(np.linalg.norm(v))
+    if norm <= 0 or not np.isfinite(norm):
+        return None
+    return (v / norm).tolist()
+
+
+def estimate_f0(chunk):
+    """自相关法基频估计：返回该段所有浊音帧的 F0（Hz）。"""
+    f0s = []
+    frame_n = 400          # 25ms @16k
+    hop = 320              # 20ms
+    lag_min, lag_max = SAMPLE_RATE // 400, SAMPLE_RATE // 70   # 70~400Hz
+    rms_all = float(np.sqrt(np.mean(chunk ** 2))) + 1e-9
+    for i in range(0, len(chunk) - frame_n, hop):
+        frame = chunk[i:i + frame_n].astype(np.float64)
+        frame -= frame.mean()
+        rms = math.sqrt(float(np.mean(frame ** 2)))
+        if rms < 0.35 * rms_all:      # 只统计能量较高的浊音帧
+            continue
+        ac = np.correlate(frame, frame, "full")[frame_n - 1:]
+        if ac[0] <= 0:
+            continue
+        seg = ac[lag_min:lag_max]
+        peak = int(np.argmax(seg)) + lag_min
+        if ac[peak] / ac[0] > 0.5:    # 归一化自相关阈值判定浊音
+            f0s.append(SAMPLE_RATE / float(peak))
+    return f0s
+
+
+def judge_gender(f0s):
+    """基频中位数判定。真值校准（2026-09-18，4人实测）：男声122/144/164Hz，女声258Hz。
+    170~190Hz 重叠区返回空（不强行猜测，允许用户纠正）。"""
+    if len(f0s) < 20:
+        return ""
+    med = float(np.median(f0s))
+    if med < 170:
+        return "男"
+    if med >= 190:
+        return "女"
+    return ""
+
+
+def extract_speaker_features(audio_path, segments):
+    """音频 + 分段 -> {speaker_id: {embedding, gender, f0}}。"""
+    wav_path = None
+    try:
+        with tempfile.NamedTemporaryFile(suffix=".wav", delete=False, dir=str(DATA)) as tmp:
+            wav_path = Path(tmp.name)
+        subprocess.run(["ffmpeg", "-y", "-i", str(audio_path), "-ac", "1",
+                        "-ar", str(SAMPLE_RATE), "-loglevel", "error", str(wav_path)],
+                       check=True, timeout=900)
+        samples = read_wav_mono16k(wav_path)
+        extractor = get_embedder()
+        by_spk = {}
+        for seg in segments:
+            by_spk.setdefault(seg["speaker"], []).append(seg)
+        meta = {}
+        for spk, segs in by_spk.items():
+            ordered = sorted(segs, key=lambda s: s["end_ms"] - s["begin_ms"], reverse=True)
+            chosen, total = [], 0
+            for s in ordered:
+                dur = s["end_ms"] - s["begin_ms"]
+                if dur < 800:
+                    continue
+                take = min(dur, 20000)
+                chosen.append((s["begin_ms"], s["begin_ms"] + take))
+                total += take
+                if total >= 30000 or len(chosen) >= 3:
+                    break
+            if not chosen:
+                continue
+            embs, f0s = [], []
+            for a, b in chosen:
+                piece = samples[int(a * SAMPLE_RATE / 1000): int(b * SAMPLE_RATE / 1000)]
+                if len(piece) < SAMPLE_RATE // 2:
+                    continue
+                try:
+                    e = embed_chunk(extractor, piece)
+                except Exception:
+                    e = None  # 单段失败不影响其他段/其他说话人
+                if e:
+                    embs.append(e)
+                try:
+                    f0s.extend(estimate_f0(piece))
+                except Exception:
+                    pass
+            entry = {"gender": judge_gender(f0s)}
+            if f0s:
+                entry["f0"] = int(float(np.median(f0s)))
+            if embs:
+                v = np.mean(np.asarray(embs, dtype=np.float32), axis=0)
+                norm = float(np.linalg.norm(v))
+                if norm > 0 and np.isfinite(norm):
+                    entry["embedding"] = (v / norm).tolist()
+            meta[str(spk)] = entry
+        return meta
+    except Exception as e:
+        # 声纹失败不影响转写主流程
+        print("speaker feature extraction failed:", e, flush=True)
+        return {}
+    finally:
+        try:
+            if wav_path and wav_path.exists():
+                wav_path.unlink()
+        except OSError:
+            pass
+
+
+def vp_all(owner=None):
+    out = {}
+    for p in VP_DIR.glob("*.person.json"):
+        try:
+            e = json.loads(p.read_text(encoding="utf-8"))
+        except ValueError:
+            continue
+        if owner and e.get("owner") != owner:
+            continue  # 声纹库按用户隔离，不同用户的声纹/人名互不可见
+        out[e["person_id"]] = e
+    return out
+
+
+def vp_match(embedding, owner=None):
+    """在指定用户的声纹库中找最像的人：返回 (person_id, name, similarity) 或 None。"""
+    if not embedding:
+        return None
+    v = np.asarray(embedding, dtype=np.float32)
+    best = None
+    for pid, person in vp_all(owner).items():
+        for vec in person.get("embeddings", []):
+            sim = float(np.dot(v, np.asarray(vec, dtype=np.float32)))
+            if best is None or sim > best[2]:
+                best = (pid, person["name"], sim)
+    return best
+
+
+def vp_add(name, gender, embedding, owner):
+    """按「用户+名字」归档声纹样本；存在同名则追加样本（滚动保留），否则新建。"""
+    with _vp_lock:
+        for p in VP_DIR.glob("*.person.json"):
+            try:
+                e = json.loads(p.read_text(encoding="utf-8"))
+            except ValueError:
+                continue
+            if e.get("owner") == owner and e.get("name") == name:
+                if embedding:
+                    embs = e.get("embeddings", [])
+                    embs.append(embedding)
+                    e["embeddings"] = embs[-VP_MAX_EMBEDDINGS:]
+                if gender:
+                    e["gender"] = gender
+                e["updated_at"] = time.time()
+                e["sample_count"] = len(e.get("embeddings", []))
+                (VP_DIR / (e["person_id"] + ".person.json")).write_text(
+                    json.dumps(e, ensure_ascii=False), encoding="utf-8")
+                return e
+        pid = uuid.uuid4().hex[:10]
+        person = {"person_id": pid, "owner": owner, "name": name, "gender": gender or "",
+                  "embeddings": [embedding] if embedding else [],
+                  "sample_count": 1 if embedding else 0,
+                  "created_at": time.time(), "updated_at": time.time()}
+        (VP_DIR / (pid + ".person.json")).write_text(
+            json.dumps(person, ensure_ascii=False), encoding="utf-8")
+        return person
+
+
+def propagate_person(user, person):
+    """人名/性别修正后同步到该用户所有任务：凡关联同一 person_id 的说话人一并更新。"""
+    pid = person["person_id"]
+    updated = 0
+    for p in DATA.glob("*.json"):
+        if p.name.endswith(".share.json"):
+            continue
+        try:
+            st = json.loads(p.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        if st.get("owner") != user:
+            continue
+        names = (st.get("result") or {}).get("speaker_names") or {}
+        changed = False
+        for e in names.values():
+            if e.get("person_id") == pid:
+                e["name"] = person["name"]
+                if person.get("gender"):
+                    e["gender"] = person["gender"]
+                if e.get("match") == "tentative":
+                    e["match"] = "user"  # "？"名已在别处确认
+                changed = True
+        if changed:
+            save_task(st)
+            updated += 1
+    if updated:
+        print("propagated person", pid, "to", updated, "tasks", flush=True)
+
+
+def attach_speaker_names(st, speaker_meta):
+    """将声纹匹配结果写入 result.speaker_names。"""
+    result = st["result"]
+    owner = st.get("owner")
+    people = vp_all(owner)
+    names = {}
+    for spk, meta in (speaker_meta or {}).items():
+        entry = {"gender": meta.get("gender", ""), "f0": meta.get("f0"),
+                 "embedding": meta.get("embedding")}
+        m = vp_match(meta.get("embedding"), owner)
+        if m:
+            pid, pname, sim = m
+            entry["similarity"] = round(sim, 3)
+            entry["person_id"] = pid
+            if sim >= VP_AUTO_THRESHOLD:
+                entry["name"] = pname
+                entry["match"] = "auto"
+            elif sim >= VP_TENTATIVE_THRESHOLD:
+                entry["name"] = pname + "？"
+                entry["match"] = "tentative"
+            # 库内性别覆盖基频判定，必须达到可疑匹配线以上；
+            # 否则任意陌生声音会继承库里最像的人的性别（曾因此把男声标错）
+            if sim >= VP_TENTATIVE_THRESHOLD:
+                pg = people.get(pid, {}).get("gender") or ""
+                if pg:
+                    entry["gender"] = pg
+        names[spk] = entry
+    result["speaker_names"] = names
+
+
+# ---------------------------------------------------------------- AI 摘要与待办
+
+def build_transcript_for_llm(result):
+    """带说话人名字的分段文本，供摘要/待办生成。"""
+    names = result.get("speaker_names") or {}
+    lines = []
+    for s in result.get("segments", []):
+        info = names.get(str(s.get("speaker")), {})
+        spk = info.get("name") or ("说话人%d" % (int(s.get("speaker", 0)) + 1))
+        lines.append("%s：%s" % (spk, s.get("text", "")))
+    return "\n".join(lines)
+
+
+def ds_chat(messages, max_tokens=8000, json_mode=False):
+    body = {"model": DS_MODEL, "messages": messages,
+            "temperature": 0.3, "max_tokens": max_tokens}
+    if json_mode:
+        body["response_format"] = {"type": "json_object"}
+    r = requests.post(DS_BASE + "/chat/completions",
+                      headers={"Authorization": "Bearer " + DS_KEY,
+                               "Content-Type": "application/json"},
+                      json=body, timeout=240)
+    r.raise_for_status()
+    return r.json()["choices"][0]["message"].get("content") or ""
+
+
+_gen_inflight = set()
+
+
+def generate_summary_todos(st):
+    """调 DeepSeek 生成摘要与待办，写入 result；失败静默（页面刷新会自动重试）。"""
+    tid = st.get("task_id") or ""
+    if not tid or tid in _gen_inflight:
+        return
+    _gen_inflight.add(tid)
+    try:
+        result = st.get("result") or {}
+        if result.get("summary_done") or result.get("summary"):
+            return  # 已生成过（可能摘要/待办为空），不重复消耗token
+        transcript = build_transcript_for_llm(result)
+        if not transcript.strip():
+            return
+        prompt = (
+            "下面是一段录音的转写文本，每行格式为「说话人：内容」。请完成两件事：\n"
+            "1. summary：用简洁中文概括这段录音的核心内容、关键事实与结论（150-300字，抓要点，不要流水账）。\n"
+            "2. todos：提取录音中提到或隐含的待办事项/行动项。每项包含 task（做什么）、"
+            "owner（谁做，尽量用说话人名字或文中人名，未知填「未指定」）、due（时间，原文没有填「未指定」）。没有待办则输出空数组。\n"
+            "只输出 JSON 对象，包含 summary 与 todos 两个字段。\n\n转写文本：\n" + transcript
+        )
+        content = ds_chat([{"role": "user", "content": prompt}], json_mode=True)
+        m = re.search(r"\{.*\}", content, re.S)
+        if not m:
+            raise RuntimeError("回复中未找到JSON: " + content[:200])
+        data = json.loads(m.group(0))
+        summary = str(data.get("summary") or "").strip()
+        todos = []
+        for t in (data.get("todos") or []):
+            if isinstance(t, dict) and str(t.get("task") or "").strip():
+                todos.append({"task": str(t["task"]).strip(),
+                              "owner": str(t.get("owner") or "").strip(),
+                              "due": str(t.get("due") or "").strip()})
+        with _lock:
+            st["result"]["summary"] = summary
+            st["result"]["todos"] = todos
+            st["result"]["summary_done"] = True
+        save_task(st)  # save_task 内部自行加锁，此处不可重复持有
+        print("summary/todos generated for", tid, flush=True)
+    except Exception as e:
+        print("summary/todos generation failed:", e, flush=True)
+    finally:
+        _gen_inflight.discard(tid)
+
+
+def worker(tid):
+    st = load_task(tid)
+    audio = DATA / (tid + ".audio")
+    try:
+        # 视频任务：先异步抽取音轨（失败即 FAILED）
+        upload_raw = DATA / (tid + ".upload")
+        if upload_raw.exists():
+            st["status"] = "RUNNING"
+            st["stage"] = "视频音轨提取"
+            save_task(st)
+            try:
+                rr = subprocess.run(
+                    ["ffmpeg", "-y", "-loglevel", "error", "-i", str(upload_raw),
+                     "-vn", "-ac", "1", "-ar", "16000", "-c:a", "aac", "-b:a", "64k",
+                     "-f", "ipod", str(audio)],
+                    capture_output=True, timeout=3600)
+            except subprocess.TimeoutExpired:
+                raise RuntimeError("视频音轨提取超时")
+            if rr.returncode != 0 or not audio.exists() or audio.stat().st_size == 0:
+                raise RuntimeError("视频音轨提取失败: " +
+                                   rr.stderr.decode(errors="ignore")[-200:])
+            upload_raw.unlink(missing_ok=True)
+        st["status"] = "RUNNING"
+        st["stage"] = "上传音频"
+        save_task(st)
+        pol = get_upload_policy()
+        oss_url = upload_to_oss(pol, audio, tid + ".audio")
+        st["stage"] = "提交识别任务"
+        save_task(st)
+        dash_tid = submit_asr(oss_url, st["options"].get("diarize", True))
+        st["dash_task_id"] = dash_tid
+        st["stage"] = "等待识别"
+        save_task(st)
+        turl = poll_asr(dash_tid, st)
+        st["stage"] = "整理结果"
+        save_task(st)
+        tj = requests.get(turl, timeout=120).json()
+        with_spk = bool(st["options"].get("diarize"))
+        segments = build_segments(tj, with_spk)
+        result = {
+            "duration_ms": (tj.get("properties") or {}).get("original_duration_in_milliseconds"),
+            "segments": segments,
+            "text": "".join(s["text"] for s in segments),
+        }
+        st["result"] = result
+        if st["options"].get("dialect2mandarin"):
+            try:
+                result["mandarin_segments"] = to_mandarin(segments)
+            except Exception as e:  # LLM 失败不影响主结果
+                result["mandarin_error"] = str(e)[:200]
+        if with_spk:
+            st["stage"] = "声纹分析"
+            save_task(st)
+            try:
+                speaker_meta = extract_speaker_features(audio, segments)
+                attach_speaker_names(st, speaker_meta)
+            except Exception as e:
+                print("voiceprint stage failed:", e, flush=True)
+        st["status"] = "SUCCEEDED"
+        st["stage"] = ""
+        save_task(st)
+    except Exception as e:
+        st["status"] = "FAILED"
+        st["error"] = str(e)[:500]
+        st["stage"] = ""
+        save_task(st)
+    finally:
+        # 成功任务保留音频30天供分享回听；失败任务立即删除
+        if st.get("status") != "SUCCEEDED":
+            try:
+                if audio.exists():
+                    audio.unlink()
+            except OSError:
+                pass
+            try:
+                (DATA / (tid + ".upload")).unlink(missing_ok=True)
+            except OSError:
+                pass
+
+
+# ---------------------------------------------------------------- API
+
+@app.get("/healthz")
+@app.get("/api/asr/healthz")
+def healthz():
+    return "ok"
+
+
+@app.post("/api/asr/task")
+def create_task():
+    user = authenticate()
+    if user is None:
+        return jsonify(error="unauthorized"), 401
+    f = request.files.get("audio")
+    if f is None or not f.filename:
+        return jsonify(error="缺少 audio 文件"), 400
+    ext = Path(f.filename).suffix.lower()
+    if ext not in ALLOWED_EXT and ext not in VIDEO_EXT:
+        return jsonify(error="不支持的音视频格式: " + ext), 400
+    try:
+        opts = json.loads(request.form.get("options", "{}"))
+    except ValueError:
+        opts = {}
+    display_name = (request.form.get("display_name") or "").strip()[:200]
+    tid = str(uuid.uuid4())
+    dest = DATA / (tid + ".audio")
+    is_video = ext in VIDEO_EXT
+    if is_video:
+        # 视频先保存原始文件，音轨抽取在 worker 内异步执行（避免大视频阻塞HTTP请求）
+        upload_raw = DATA / (tid + ".upload")
+        f.save(upload_raw)
+    else:
+        f.save(dest)
+    st = {"task_id": tid, "status": "PENDING", "stage": "排队中",
+          "filename": f.filename, "display_name": display_name,
+          "owner": user,
+          "is_video": is_video,
+          "audio_mime": "audio/mp4" if is_video else AUDIO_MIME.get(ext, "audio/mp4"),
+          "size": upload_raw.stat().st_size if is_video else dest.stat().st_size,
+          "options": {"transcribe": bool(opts.get("transcribe", True)),
+                      "timestamps": bool(opts.get("timestamps", True)),
+                      "diarize": bool(opts.get("diarize", True)),
+                      "dialect2mandarin": bool(opts.get("dialect2mandarin", False))},
+          "created_at": time.time()}
+    save_task(st)
+    threading.Thread(target=worker, args=(tid,), daemon=True).start()
+    return jsonify(task_id=tid, status="PENDING")
+
+
+@app.get("/api/asr/task/<tid>")
+def get_task(tid):
+    user = authenticate()
+    if user is None:
+        return jsonify(error="unauthorized"), 401
+    st = load_task(tid)
+    if st is None or st.get("owner") != user:
+        return jsonify(error="task not found"), 404
+    return jsonify(st)
+
+
+@app.delete("/api/asr/task/<tid>")
+def delete_task(tid):
+    user = authenticate()
+    if user is None:
+        return jsonify(error="unauthorized"), 401
+    st = load_task(tid)
+    if st is None or st.get("owner") != user:
+        return jsonify(error="task not found"), 404
+    removed = {"task": False, "audio": False, "shares": 0}
+    for p in DATA.glob("*.share.json"):
+        try:
+            sh = json.loads(p.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        if sh.get("task_id") == tid:
+            p.unlink(missing_ok=True)
+            removed["shares"] += 1
+    removed["audio"] = (DATA / (tid + ".audio")).unlink(missing_ok=True) is None
+    removed["task"] = (DATA / (tid + ".json")).unlink(missing_ok=True) is None
+    print("task deleted by", user, ":", tid, removed, flush=True)
+    return jsonify(deleted=True, **removed)
+
+
+@app.get("/api/asr/tasks")
+def list_tasks():
+    user = authenticate()
+    if user is None:
+        return jsonify(error="unauthorized"), 401
+    share_counts = {}
+    for p in DATA.glob("*.share.json"):
+        try:
+            sh = json.loads(p.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        share_counts[sh.get("task_id")] = share_counts.get(sh.get("task_id"), 0) + 1
+    items = []
+    for p in DATA.glob("*.json"):
+        if p.name.endswith(".share.json"):
+            continue
+        try:
+            st = json.loads(p.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        if st.get("owner") != user:
+            continue
+        r = st.get("result") or {}
+        items.append({
+            "task_id": st.get("task_id"),
+            "name": st.get("display_name") or st.get("filename") or "未命名录音",
+            "status": st.get("status"),
+            "stage": st.get("stage", ""),
+            "created_at": st.get("created_at"),
+            "duration_ms": r.get("duration_ms"),
+            "has_summary": bool(r.get("summary")),
+            "is_video": bool(st.get("is_video")),
+            "share_count": share_counts.get(st.get("task_id"), 0),
+        })
+    items.sort(key=lambda x: x.get("created_at") or 0, reverse=True)
+    return jsonify(tasks=items)
+
+
+@app.post("/api/asr/auth/verify")
+def auth_verify():
+    if auth_blocked():
+        return jsonify(error="尝试过于频繁，请15分钟后再试"), 429
+    user = authenticate()
+    if user is None:
+        return jsonify(error="invalid token"), 401
+    return jsonify(user=user)
+
+
+@app.post("/api/asr/task/<tid>/share")
+def create_share(tid):
+    user = authenticate()
+    if user is None:
+        return jsonify(error="unauthorized"), 401
+    st = load_task(tid)
+    if st is None or st.get("owner") != user or st.get("status") != "SUCCEEDED":
+        return jsonify(error="task not found or not finished"), 404
+    # 有效期默认24小时，可打开次数默认5次（0=不限）
+    try:
+        hours = int(request.form.get("validity_hours", SHARE_DEFAULT_HOURS))
+        max_opens = int(request.form.get("max_opens", SHARE_DEFAULT_MAX_OPENS))
+    except (TypeError, ValueError):
+        return jsonify(error="validity_hours / max_opens 参数错误"), 400
+    if not (1 <= hours <= 24 * 60):
+        return jsonify(error="有效期需在1小时~60天之间"), 400
+    if not (0 <= max_opens <= 100000):
+        return jsonify(error="可打开次数参数错误"), 400
+    # 段落回听与说话人名字展示默认开启，与历史分享行为一致（"0"/"false" 视为关闭）
+    allow_play = request.form.get("allow_segment_play", "1") not in ("0", "false", "False")
+    show_names = request.form.get("show_speaker_names", "1") not in ("0", "false", "False")
+    sid = uuid.uuid4().hex[:10]
+    pwd = "".join(secrets.choice(PWD_ALPHABET) for _ in range(PWD_LENGTH))
+    share = {"share_id": sid, "pwd": pwd, "task_id": tid,
+             "created_at": time.time(), "expires_at": time.time() + hours * 3600,
+             "validity_hours": hours, "max_opens": max_opens, "opens": 0,
+             "allow_segment_play": allow_play, "show_speaker_names": show_names,
+             "summary_pending": True,
+             "filename": st.get("display_name") or st.get("filename") or "转写结果"}
+    save_share(share)
+    # 异步生成 AI 摘要与待办（deepseek-flash），生成后分享页刷新即可见
+    threading.Thread(target=generate_summary_todos, args=(st,), daemon=True).start()
+    return jsonify(share_id=sid, pwd=pwd,
+                   url="%s/%s?pwd=%s" % (SHARE_BASE, sid, pwd),
+                   validity_hours=hours, max_opens=max_opens,
+                   allow_segment_play=allow_play, show_speaker_names=show_names,
+                   expires_at=share["expires_at"])
+
+
+def purge_expired_audio():
+    now = time.time()
+    for p in DATA.glob("*.audio"):
+        try:
+            if now - p.stat().st_mtime > AUDIO_RETENTION_SECONDS:
+                p.unlink()
+                print("purged expired audio:", p.name, flush=True)
+        except OSError:
+            continue
+    # 过期超过7天的分享记录、失败任务记录一并清理
+    for p in DATA.glob("*.share.json"):
+        try:
+            sh = json.loads(p.read_text(encoding="utf-8"))
+            if now > sh.get("expires_at", 0) + 7 * 86400:
+                p.unlink()
+                print("purged expired share:", p.name, flush=True)
+        except (OSError, ValueError):
+            continue
+    for p in DATA.glob("*.json"):
+        if p.name.endswith(".share.json"):
+            continue
+        try:
+            st = json.loads(p.read_text(encoding="utf-8"))
+            if st.get("status") == "FAILED" and now - st.get("created_at", now) > AUDIO_RETENTION_SECONDS:
+                p.unlink()
+                print("purged failed task:", p.name, flush=True)
+        except (OSError, ValueError):
+            continue
+
+
+def audio_purge_loop():
+    while True:
+        try:
+            purge_expired_audio()
+        except Exception as e:
+            print("purge loop error:", e, flush=True)
+        time.sleep(3600)
+
+
+@app.get("/s/<sid>/audio")
+def share_audio(sid):
+    """分享链接的段落回听：按毫秒切片转 mp3 流式返回，需携带正确提取码。"""
+    if not re.fullmatch(r"[0-9a-f]{6,32}", sid):
+        return jsonify(error="not found"), 404
+    sh = load_share(sid)
+    if sh is None:
+        return jsonify(error="not found"), 404
+    pwd = request.args.get("pwd", "")
+    if pwd.strip().upper() != str(sh["pwd"]).upper():
+        return jsonify(error="forbidden"), 403
+    # 创建时未开启段落回听的分享，服务端直接拒绝切片（不依赖页面行为）
+    if not sh.get("allow_segment_play", True):
+        return jsonify(error="该分享未开启段落回听"), 403
+    # 打开次数用完后停止回放（已打开的页面本次会话内仍可听：等于上限时放行）
+    if int(sh.get("max_opens") or 0) and int(sh.get("opens") or 0) > int(sh.get("max_opens")):
+        return jsonify(error="打开次数已用完"), 403
+    st = load_task(sh["task_id"])
+    audio = DATA / (sh["task_id"] + ".audio")
+    if st is None or "result" not in st or not audio.exists():
+        return jsonify(error="音频已过期或不存在"), 404
+    try:
+        a = max(0, int(request.args.get("a", "0")))
+        b = int(request.args.get("b", "0"))
+    except ValueError:
+        return jsonify(error="参数错误"), 400
+    if b <= a:
+        return jsonify(error="参数错误"), 400
+    if b - a > MAX_SLICE_MS:
+        b = a + MAX_SLICE_MS
+    total_ms = int((st.get("result") or {}).get("duration_ms") or 0)
+    if total_ms and b > total_ms:
+        b = total_ms
+    if b <= a:
+        return jsonify(error="参数错误"), 400
+    try:
+        p = subprocess.run(["ffmpeg", "-hide_banner", "-loglevel", "error",
+                            "-ss", "%.3f" % (a / 1000.0), "-i", str(audio),
+                            "-t", "%.3f" % ((b - a) / 1000.0),
+                            "-vn", "-acodec", "libmp3lame", "-b:a", "48k",
+                            "-f", "mp3", "pipe:1"],
+                           capture_output=True, timeout=120)
+    except subprocess.TimeoutExpired:
+        return jsonify(error="音频切片超时"), 504
+    if p.returncode != 0 or not p.stdout:
+        return jsonify(error="音频切片失败"), 500
+    return Response(p.stdout, mimetype="audio/mpeg",
+                    headers={"Cache-Control": "private, max-age=86400",
+                             "Accept-Ranges": "none"})
+
+
+@app.get("/api/asr/task/<tid>/audio")
+def task_audio(tid):
+    """音频流：所有者按令牌播放自己任务的录音。
+    不带 a/b → 返回整个音频文件（支持 Range 拉流/拖动）；
+    带 a、b（毫秒） → 返回该片段的 mp3 切片（结果页点段落回听）。"""
+    user = authenticate()
+    if user is None:
+        return jsonify(error="unauthorized"), 401
+    st = load_task(tid)
+    if st is None or st.get("owner") != user or "result" not in st:
+        return jsonify(error="task not found"), 404
+    audio = DATA / (tid + ".audio")
+    if not audio.exists():
+        return jsonify(error="音频已过期或不存在"), 404
+    try:
+        a = int(request.args.get("a", "0"))
+        b = int(request.args.get("b", "0"))
+    except ValueError:
+        return jsonify(error="参数错误"), 400
+    if a > 0 and b > a:
+        if b - a > MAX_SLICE_MS:
+            b = a + MAX_SLICE_MS
+        total_ms = int((st.get("result") or {}).get("duration_ms") or 0)
+        if total_ms and b > total_ms:
+            b = total_ms
+        if b <= a:
+            return jsonify(error="参数错误"), 400
+        try:
+            p = subprocess.run(
+                ["ffmpeg", "-y", "-loglevel", "error", "-ss", "%.3f" % (a / 1000.0),
+                 "-i", str(audio), "-t", "%.3f" % ((b - a) / 1000.0),
+                 "-vn", "-acodec", "libmp3lame", "-b:a", "48k", "-f", "mp3", "pipe:1"],
+                capture_output=True, timeout=120)
+        except subprocess.TimeoutExpired:
+            return jsonify(error="音频切片超时"), 504
+        if p.returncode != 0 or not p.stdout:
+            return jsonify(error="音频切片失败"), 500
+        return Response(p.stdout, mimetype="audio/mpeg",
+                        headers={"Cache-Control": "private, max-age=86400"})
+    mime = st.get("audio_mime") or "audio/mp4"
+    try:
+        return send_file(audio, mimetype=mime, conditional=True,
+                         as_attachment=False, download_name="audio")
+    except Exception as e:
+        return jsonify(error="音频读取失败: " + str(e)[:120]), 500
+
+
+@app.post("/api/asr/task/<tid>/summary")
+def make_summary(tid):
+    """按需生成（或返回已有）AI 摘要与待办。同步调用，约需几十秒。"""
+    user = authenticate()
+    if user is None:
+        return jsonify(error="unauthorized"), 401
+    st = load_task(tid)
+    if st is None or st.get("owner") != user or "result" not in st:
+        return jsonify(error="task not found or not finished"), 404
+    generate_summary_todos(st)
+    st = load_task(tid) or st
+    return jsonify(result=st.get("result"))
+
+
+@app.post("/api/asr/task/<tid>/label")
+def label_speaker(tid):
+    """标注说话人名字（并入声纹库），返回更新后的 result。"""
+    user = authenticate()
+    if user is None:
+        return jsonify(error="unauthorized"), 401
+    st = load_task(tid)
+    if st is None or st.get("owner") != user or "result" not in st:
+        return jsonify(error="task not found or not finished"), 404
+    body = request.get_json(force=True, silent=True) or {}
+    try:
+        spk = str(int(body.get("speaker")))
+    except (TypeError, ValueError):
+        return jsonify(error="speaker 参数错误"), 400
+    name = (body.get("name") or "").strip()[:50]
+    if not name:
+        return jsonify(error="缺少名字"), 400
+    gender = (body.get("gender") or "").strip()
+    if gender not in ("男", "女", ""):
+        return jsonify(error="性别参数错误"), 400
+    result = st["result"]
+    meta = (result.get("speaker_names") or {}).get(spk, {})
+    embedding = meta.get("embedding")
+    person = vp_add(name, gender, embedding, user)
+    entry = {k: v for k, v in meta.items() if k in ("similarity", "embedding", "f0")}
+    entry.update(name=name, match="user", person_id=person["person_id"])
+    entry["gender"] = gender or meta.get("gender") or person.get("gender") or ""
+    result.setdefault("speaker_names", {})[spk] = entry
+    save_task(st)
+    # 名字/性别修正同步到该用户所有关联同一人的任务（含已生成的分享页）
+    propagate_person(user, person)
+    return jsonify(result=result)
+
+
+@app.get("/api/asr/voiceprints")
+def list_voiceprints():
+    user = authenticate()
+    if user is None:
+        return jsonify(error="unauthorized"), 401
+    people = sorted(vp_all(user).values(),
+                    key=lambda e: e.get("updated_at", 0), reverse=True)
+    return jsonify(voiceprints=[{"name": p.get("name"), "gender": p.get("gender", ""),
+                                 "samples": p.get("sample_count", 0)} for p in people])
+
+
+# ---------------------------------------------------------------- 分享页
+
+PAGE_CSS = """
+body{margin:0;background:#f7f6f1;font-family:-apple-system,'PingFang SC','Microsoft YaHei',sans-serif;color:#212121}
+.wrap{max-width:720px;margin:0 auto;padding:20px 16px 40px}
+h1{font-size:18px;margin:0 0 4px;word-break:break-all}
+.meta{font-size:12px;color:#8a8a8a;margin-bottom:10px}
+button{border:1px solid #ccc;background:#fff;border-radius:6px;padding:6px 12px;font-size:13px;margin:2px 4px 12px 0}
+.seg{margin:0 0 14px;cursor:pointer;-webkit-tap-highlight-color:transparent}
+.seg.play{background:#e8f0fe;border-radius:8px}
+.label{font-size:12px;font-weight:700;margin-bottom:2px}
+.txt{font-size:15px;line-height:1.7}
+.s0{color:#1565c0}.s1{color:#c62828}.s2{color:#2e7d32}.s3{color:#6a1b9a}
+.ai{background:#fff;border:1px solid #e5e3da;border-radius:10px;padding:14px 16px;margin:0 0 14px}
+.tabs{display:flex;background:#fff;border:1px solid #e5e3da;border-radius:8px;overflow:hidden;margin-bottom:12px}
+.tab{flex:1;text-align:center;padding:10px 0;font-size:14px;color:#666;cursor:pointer;-webkit-tap-highlight-color:transparent}
+.tab.active{color:#1565C0;font-weight:700;background:#eef4fc}
+#toast{position:fixed;bottom:64px;left:50%;transform:translateX(-50%);background:rgba(0,0,0,0.78);color:#fff;padding:8px 20px;border-radius:20px;font-size:13px;display:none;z-index:9;max-width:80%;text-align:center}
+.aih{font-size:13px;font-weight:700;color:#1565c0;margin:10px 0 6px}
+.aih:first-child{margin-top:0}
+.aitxt{font-size:14px;line-height:1.8}
+.todos{margin:4px 0 0;padding-left:20px}
+.todos li{margin:6px 0;font-size:14px;line-height:1.6}
+.gate{max-width:360px;margin:15vh auto 0;background:#fff;border-radius:10px;padding:28px 24px;text-align:center}
+.gate input{font-size:16px;letter-spacing:2px;text-align:center;width:100%;padding:8px;border:1px solid #ccc;border-radius:6px;text-transform:uppercase;font-family:monospace}
+.gate .err{color:#c62828;font-size:13px;margin-top:10px}
+"""
+
+
+def render_page(title, meta_html, body_html):
+    return ("<!doctype html><html lang=\"zh\"><head><meta charset=\"utf-8\">"
+            "<meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">"
+            "<title>%s</title><style>%s</style></head><body>%s</body></html>"
+            % (html.escape(title), PAGE_CSS, body_html))
+
+
+def render_gate(sid, wrong):
+    body = ("<div class=\"gate\"><div style=\"font-size:16px;margin-bottom:14px\">轻舟浏览器 · 转写结果</div>"
+            "<form method=\"post\" action=\"/s/%s\">"
+            "<input name=\"pwd\" maxlength=\"32\" placeholder=\"提取码\" autofocus>"
+            "<div><button type=\"submit\" style=\"margin-top:14px\">查看</button></div>"
+            "</form>%s</div>"
+            % (sid, "<div class=\"err\">提取码不正确</div>" if wrong else ""))
+    return render_page("提取码", "", body)
+
+
+@app.get("/s/<sid>")
+@app.post("/s/<sid>")
+def share_page(sid):
+    if not re.fullmatch(r"[0-9a-f]{6,32}", sid):
+        return render_page("错误", "", "<div class=\"gate\">链接不存在或已过期</div>"), 404
+    sh = load_share(sid)
+    if sh is None:
+        return render_page("错误", "", "<div class=\"gate\">链接不存在或已过期</div>"), 404
+    pwd = request.args.get("pwd", "")
+    if request.method == "POST":
+        pwd = request.form.get("pwd", "")
+    if pwd.strip().upper() != str(sh["pwd"]).upper():
+        if request.method == "GET" and pwd == "":
+            return render_gate(sid, False)
+        return render_gate(sid, True), 200
+    # 微信聊天记录转存分享：独立渲染，不计音频任务的打开次数
+    if sh.get("type") == "wxchat":
+        return wxchat_share_page(sh, sid)
+    # 打开次数：每次密码校验通过并查看内容计一次；超出后不再展示
+    max_opens = int(sh.get("max_opens") or 0)
+    opens = int(sh.get("opens") or 0)
+    if max_opens and opens >= max_opens:
+        return render_page("错误", "",
+                           "<div class=\"gate\">打开次数已用完（上限 %d 次）</div>" % max_opens), 200
+    sh["opens"] = opens + 1
+    save_share(sh)
+    st = load_task(sh["task_id"])
+    if st is None or "result" not in st:
+        return render_page("错误", "", "<div class=\"gate\">结果数据不存在</div>"), 404
+    result = st["result"]
+    opts = st.get("options", {})
+    # 分享级开关：段落回听、说话人名字展示（历史分享缺省视为开启）
+    allow_play = bool(sh.get("allow_segment_play", True))
+    show_names = bool(sh.get("show_speaker_names", True))
+
+    def segs_js(key):
+        arr = result.get(key) or []
+        return json.dumps(arr, ensure_ascii=False).replace("</", "<\\/")
+
+    # 分享页不携带声纹向量（生物特征信息不出服务器）；关闭名字展示时名字一并不下发
+    names_public = {}
+    if show_names:
+        for k, v in (result.get("speaker_names") or {}).items():
+            names_public[k] = {kk: vv for kk, vv in v.items() if kk != "embedding"}
+    names_js = json.dumps(names_public, ensure_ascii=False).replace("</", "<\\/")
+
+    total_ms = result.get("duration_ms") or 0
+    total_sec = int(total_ms / 1000)
+    dur_text = ("%d分%02d秒" % (total_sec // 60, total_sec % 60)) if total_sec else ""
+    meta = []
+    if dur_text:
+        meta.append("时长 " + dur_text)
+    if opts.get("diarize"):
+        meta.append("区分说话人")
+    if opts.get("timestamps"):
+        meta.append("含起止时间")
+    if result.get("mandarin_segments"):
+        meta.append("方言已译普通话")
+    meta_html = " · ".join(meta)
+    has_mand = 1 if result.get("mandarin_segments") else 0
+
+    summary = str(result.get("summary") or "")
+    todos = result.get("todos") or []
+    ai_inner = ""
+    if summary or todos:
+        parts = []
+        if summary:
+            parts.append('<div class="aih">AI 摘要</div><div class="aitxt">%s</div>'
+                         % html.escape(summary))
+        if todos:
+            titems = ""
+            for t in todos:
+                extra = ""
+                if t.get("owner") or t.get("due"):
+                    extra = '<span class="meta">　%s · %s</span>' % (
+                        html.escape(t.get("owner") or "未指定"),
+                        html.escape(t.get("due") or "未指定"))
+                titems += '<li><label><input type="checkbox">%s%s</label></li>' % (
+                    html.escape(t.get("task", "")), extra)
+            parts.append('<div class="aih">待办事项</div><ul class="todos">%s</ul>' % titems)
+        ai_inner = ('<div class="ai"><button onclick="copyAI()">复制摘要与待办</button>'
+                    + "".join(parts) + "</div>")
+    elif sh.get("summary_pending") and not result.get("summary_done"):
+        ai_inner = '<div class="meta" style="margin:6px 0 10px">AI 摘要与待办生成中，请稍后刷新页面查看…</div>'
+        # 页面访问触发/重试生成（幂等，进行中会跳过）
+        threading.Thread(target=generate_summary_todos, args=(st,), daemon=True).start()
+    has_ai = 1 if ai_inner else 0
+    ai_tab = '<div class="tab" onclick="switchTab(1,this)">AI 摘要 · 待办</div>' if has_ai else ""
+    ai_page = ('<div id="page1" style="display:none">' + ai_inner + "</div>") if has_ai else ""
+    summary_js = json.dumps(summary, ensure_ascii=False).replace("</", "<\\/")
+    todos_js = json.dumps(todos, ensure_ascii=False).replace("</", "<\\/")
+
+    body = ("<div class=\"wrap\"><h1>%s</h1><div class=\"meta\">%s · 轻舟浏览器转写</div>"
+            "<div class=\"tabs\">"
+            "<div class=\"tab active\" onclick=\"switchTab(0,this)\">识别结果</div>"
+            "%s"
+            "</div>"
+            "<div id=\"page0\">"
+            "<button id=\"tg\" style=\"display:%s\">查看原文</button>"
+            "<button onclick=\"copyAll()\">复制全文</button>"
+            "%s"
+            "<div id=\"content\"></div>"
+            "</div>"
+            "%s"
+            "</div>"
+            "<div id=\"toast\"></div>"
+            "<script>"
+            "var PWD=%s;var SID='%s';var ORIG=%s;var MAND=%s;var NAMES=%s;var HAS_TS=%d;var HAS_SPK=%d;var CAN_PLAY=%d;var SHOW_NAME=%d;var SUMMARY=%s;var TODOS=%s;var mand=false;"
+            "var colors=['s0','s1','s2','s3'];"
+            "function spkInfo(id){return NAMES[String(id)]||null;}"
+            "function spkLabel(id){if(!HAS_SPK)return '';"
+            "var n=SHOW_NAME?spkInfo(id):null;"
+            "if(n&&n.name){return n.gender?n.name+'（'+n.gender+'）':n.name;}"
+            "var cmap=window.__cmap||{};var idx=(cmap[String(id)]!==undefined)?cmap[String(id)]:Number(id);"
+            "return '说话人'+(idx+1);}"
+            "function spkColor(id){var cmap=window.__cmap||{};var i=cmap[String(id)];"
+            "return (i===undefined)?colors[0]:colors[i %% colors.length];}"
+            "function esc(s){var d=document.createElement('div');d.textContent=s;return d.innerHTML;}"
+            "var _tt=null;function toast(m){var t=document.getElementById('toast');t.textContent=m;"
+            "t.style.display='block';if(_tt)clearTimeout(_tt);_tt=setTimeout(function(){t.style.display='none';},1600);}"
+            "function legacyCopy(t){var ta=document.createElement('textarea');ta.value=t;"
+            "ta.style.position='fixed';ta.style.opacity='0';document.body.appendChild(ta);ta.focus();ta.select();"
+            "try{document.execCommand('copy');}catch(e){}document.body.removeChild(ta);}"
+            "function copyText(t,ok){"
+            "if(navigator.clipboard&&navigator.clipboard.writeText){"
+            "navigator.clipboard.writeText(t).then(ok,function(){legacyCopy(t);ok();});}else{legacyCopy(t);ok();}}"
+            "function switchTab(n,el){var tabs=document.querySelectorAll('.tab');"
+            "for(var i=0;i<tabs.length;i++){tabs[i].classList.remove('active');}"
+            "el.classList.add('active');"
+            "document.getElementById('page0').style.display=(n===0)?'block':'none';"
+            "var p1=document.getElementById('page1');if(p1)p1.style.display=(n===1)?'block':'none';}"
+            "function render(){var arr=mand&&MAND?MAND:ORIG;var h='';"
+            "var cmap={};var ci=0;"
+            "for(var i=0;i<arr.length;i++){var sid=String(arr[i].speaker);"
+            "if(!(sid in cmap)){cmap[sid]=ci++;}}"
+            "window.__cmap=cmap;"
+            "for(var i=0;i<arr.length;i++){var s=arr[i];var lab=[];"
+            "var sl=spkLabel(s.speaker);if(sl)lab.push('<span class=\"'+spkColor(s.speaker)+'\">'+esc(sl)+'</span>');"
+            "if(HAS_TS)lab.push(esc(s.begin+' - '+s.end));"
+            "h+='<div class=\"seg\"'+(CAN_PLAY?' onclick=\"segClick(this)\"':'')+' data-a=\"'+s.begin_ms+'\" data-b=\"'+s.end_ms+'\">'+(lab.length?'<div class=\"label\">'+lab.join('   ')+'</div>':'')+'<div class=\"txt\">'+esc(s.text)+'</div></div>';}"
+            "document.getElementById('content').innerHTML=h;"
+            "document.getElementById('tg').textContent=mand?'查看原文':'查看普通话译文';"
+            "window.__cur=arr;}"
+            "function copyAll(){var arr=window.__cur||ORIG;var t='';"
+            "for(var i=0;i<arr.length;i++){var s=arr[i];var sl=spkLabel(s.speaker);"
+            "t+=(sl?'['+sl+']':'')+(HAS_TS?'['+s.begin+'-'+s.end+']':'')+s.text+'\\n';}"
+            "copyText(t,function(){toast('复制成功');});}"
+            "function copyAI(){var t='【AI 摘要】'+SUMMARY+'\\n';"
+            "if(TODOS&&TODOS.length){t+='\\n【待办事项】\\n';"
+            "for(var i=0;i<TODOS.length;i++){var d=TODOS[i];t+=(i+1)+'. '+d.task;"
+            "if(d.owner&&d.owner!=='未指定')t+='（'+d.owner+'）';"
+            "if(d.due&&d.due!=='未指定')t+=' ['+d.due+']';t+='\\n';}}"
+            "copyText(t,function(){toast('复制成功');});}"
+            "var audioEl=null,curSeg=null;"
+            "function segClick(el){var a=el.getAttribute('data-a'),b=el.getAttribute('data-b');"
+            "if(!audioEl){audioEl=new Audio();}"
+            "var A=audioEl;"
+            "if(curSeg===el){if(A.paused){A.play();}else{A.pause();}return;}"
+            "if(curSeg){curSeg.classList.remove('play');}"
+            "curSeg=el;el.classList.add('play');"
+            "A.src='/s/'+SID+'/audio?a='+a+'&b='+b+'&pwd='+encodeURIComponent(PWD);"
+            "A.onended=function(){if(curSeg)curSeg.classList.remove('play');};"
+            "A.onerror=function(){var s=document.getElementById('audstat');if(s)s.textContent='本段音频无法回放（音频已过期或不存在）';};"
+            "A.play();}"
+            "document.getElementById('tg').onclick=function(){mand=!mand;render();};"
+            "render();</script>"
+            % (html.escape(sh.get("filename") or "转写结果"), html.escape(meta_html),
+               ai_tab,
+               "inline-block" if has_mand else "none",
+               ('<div id="audstat" class="meta" style="margin-bottom:12px">'
+                '点击任意段落可回听对应原音</div>') if allow_play else "",
+               ai_page,
+               json.dumps(str(sh["pwd"])), sid,
+               segs_js("segments"), segs_js("mandarin_segments"), names_js,
+               1 if opts.get("timestamps") else 0, 1 if opts.get("diarize") else 0,
+               1 if allow_play else 0, 1 if show_names else 0,
+               summary_js, todos_js))
+    return render_page(sh.get("filename") or "转写结果", meta_html, body)
+
+
+# ---------------------------------------------------------------- 微信聊天记录转存
+# 微信把合并转发消息分享给第三方应用时打包为 聊天记录_日期_时间.zip：
+# 聊天记录.txt（UTF-8，每条消息 ·发送者/时间/内容，附件为 [文件] 名字）
+# 加媒体目录（聊天记录内的图片、视频和文件/）。条目名未打 UTF-8 标志，按 GBK 解码。
+
+import base64
+import glob
+import io
+import mimetypes
+import shutil
+from concurrent.futures import ThreadPoolExecutor
+
+WXCHAT_HOURS = 30 * 24          # 与音频分享同寿命：30 天
+WXCHAT_MAX_ENTRIES = 500        # zip 条目数上限（防解压炸弹）
+WXCHAT_MAX_UNPACK_MB = 600      # 解压累计大小上限（与上传上限一致）
+
+
+def zip_entry_name(info):
+    """微信 zip 的条目名没打 UTF-8 标志位，默认 cp437 读出乱码，需转 GBK。"""
+    if info.flag_bits & 0x800:
+        return info.filename
+    try:
+        return info.filename.encode("cp437").decode("gbk")
+    except (UnicodeEncodeError, UnicodeDecodeError):
+        return info.filename
+
+
+_WX_TIME_RE = re.compile(r"^(?:(\d{4})年(\d{1,2})月(\d{1,2})日\s+)?(\d{1,2}):(\d{2})$")
+_WX_TAG_RE = re.compile(r"^\[([^]]+)\]\s*(.*)$", re.S)
+
+
+def _wx_parse_time(raw, last_date):
+    m = _WX_TIME_RE.match(raw.strip())
+    if not m:
+        return None, last_date
+    y, mo, d, hh, mm = m.groups()
+    if y:
+        last_date = "%04d-%02d-%02d" % (int(y), int(mo), int(d))
+    return ((last_date or "") + " %02d:%02d" % (int(hh), int(mm))).strip(), last_date
+
+
+def _wx_classify(text):
+    """按微信标记识别消息类型：[文件]x→file、[图片]/[视频]/[语音]等按标记，其余按文本。"""
+    m = _WX_TAG_RE.match(text.strip())
+    if not m:
+        return "text", None, text
+    tag, rest = m.group(1), m.group(2).strip()
+    low = tag.lower()
+    if low == "文件":
+        return "file", rest, rest
+    if low == "图片":
+        return "image", rest or None, text
+    if low == "视频":
+        return "video", rest or None, text
+    if low == "语音":
+        return "voice", rest or None, text
+    if low in ("链接", "位置", "名片", "小程序", "音乐"):
+        return low, rest or None, text
+    return "text", None, text
+
+
+def _wx_parse_chat_text(text):
+    """逐行扫描：·行开新消息，下一行须是时间（一并消费），其余行进内容。"""
+    lines = text.replace("\r\n", "\n").split("\n")
+    msgs = []
+    cur = None
+    last_date = None
+
+    def flush():
+        nonlocal cur
+        if cur is None:
+            return
+        content = "\n".join(cur["lines"]).strip()
+        if content:
+            mtype, fname, clean = _wx_classify(content)
+            msg = {"sender": cur["sender"], "time": cur["time"], "type": mtype, "text": clean}
+            if fname:
+                msg["file_name"] = fname
+            msgs.append(msg)
+        cur = None
+
+    i = 0
+    while i < len(lines):
+        line = lines[i]
+        if line.startswith("·") and i + 1 < len(lines):
+            t, last_date = _wx_parse_time(lines[i + 1], last_date)
+            if t is not None:
+                flush()
+                cur = {"sender": line[1:].strip(), "time": t, "lines": []}
+                i += 2
+                continue
+        if cur is not None:
+            cur["lines"].append(line)
+        i += 1
+    flush()
+    return msgs
+
+
+def wxchat_parse_zip(zip_path, title):
+    """解析聊天记录 zip：返回 (chat_dict, others)。others 为消息未引用的附件 (名, info)。"""
+    total = 0
+    with zipfile.ZipFile(zip_path) as zf:
+        infos = zf.infolist()
+        if len(infos) > WXCHAT_MAX_ENTRIES:
+            raise ValueError("zip 内文件过多（>%d），不是聊天记录分享包" % WXCHAT_MAX_ENTRIES)
+        txt_data = None
+        media = []
+        for info in infos:
+            if info.is_dir():
+                continue
+            total += info.file_size
+            if total > WXCHAT_MAX_UNPACK_MB * 1024 * 1024:
+                raise ValueError("zip 解压内容过大，拒绝处理")
+            name = zip_entry_name(info).replace("\\", "/")
+            base = PurePosixPath(name).name
+            if not base or base.startswith("."):
+                continue
+            if name.endswith(".txt") and "聊天记录" in name and txt_data is None:
+                txt_data = zf.read(info)
+            else:
+                media.append((base, info))
+        if txt_data is None:
+            raise ValueError("zip 内未找到 聊天记录.txt，不是微信聊天记录分享包")
+        messages = _wx_parse_chat_text(txt_data.decode("utf-8", errors="replace"))
+        if not messages:
+            raise ValueError("聊天记录.txt 内未解析出消息")
+        by_name = {}
+        for base, info in media:
+            by_name.setdefault(base, info)
+        # 附件与文件消息对号入座；对不上的留在 others 供页面「其他附件」展示
+        attachments = []
+        att_index = {}
+        used = set()
+        for m in messages:
+            if m.get("type") == "file" and m.get("file_name") in by_name:
+                base = m["file_name"]
+                if base not in att_index:
+                    att_index[base] = len(attachments)
+                    attachments.append({"name": base, "size": by_name[base].file_size})
+                m["att"] = att_index[base]
+                m["size"] = by_name[base].file_size
+                used.add(base)
+        participants = []
+        for m in messages:
+            if m["sender"] not in participants:
+                participants.append(m["sender"])
+        times = [m["time"] for m in messages if m["time"]]
+        chat = {
+            "title": title or "聊天记录",
+            "source": "wechat",
+            "participants": participants,
+            "message_count": len(messages),
+            "time_start": times[0] if times else None,
+            "time_end": times[-1] if times else None,
+            "messages": messages,
+            "attachments": attachments,
+        }
+        # [图片]/[视频] 消息与媒体目录中未被引用的图片/视频按顺序配对
+        # （微信导出按消息顺序生成 img_N 等序号文件名，txt 中不写文件名）
+        img_files = sorted((b for b, i in media
+                            if b not in used and PurePosixPath(b).suffix.lower() in _IMG_EXT),
+                           key=_natural_key)
+        vid_files = sorted((b for b, i in media
+                            if b not in used and PurePosixPath(b).suffix.lower() in _VIDEO_EXT),
+                           key=_natural_key)
+        for m, base in zip((m for m in messages if m.get("type") == "image"), img_files):
+            used.add(base)
+            m["att"] = len(attachments)
+            m["size"] = by_name[base].file_size
+            attachments.append({"name": base, "size": by_name[base].file_size})
+        for m, base in zip((m for m in messages if m.get("type") == "video"), vid_files):
+            used.add(base)
+            m["att"] = len(attachments)
+            m["size"] = by_name[base].file_size
+            attachments.append({"name": base, "size": by_name[base].file_size})
+        others = [(base, info) for base, info in media if base not in used]
+        return chat, others
+
+
+_IMG_EXT = {".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp"}
+_VIDEO_EXT = {".mp4", ".mov", ".mkv", ".avi", ".webm", ".m4v"}
+
+
+def _natural_key(name):
+    """文件名自然排序：img_2.jpg 排在 img_10.jpg 前（微信媒体文件按序号命名）。"""
+    return [int(t) if t.isdigit() else t for t in re.split(r"(\d+)", name.lower())]
+
+
+# ---- 视觉摘录（GLM-4V-Flash）：附件中的图片与 PDF 自动解析为 Markdown ----
+
+GLM_API_URL = "https://open.bigmodel.cn/api/paas/v4/chat/completions"
+GLM_MODEL = CFG.get("glm_vision_model", "glm-4v-flash")
+GLM_KEY = CFG.get("glm_vision_api_key", "")
+OCR_MAX_RETRY = 5
+OCR_RETRY_DELAY = 1.0
+OCR_CONCURRENCY = 3
+OCR_MAX_PDF_PAGES = 30
+OCR_MAX_FILE_MB = 30
+
+OCR_PROMPT = """请完整摘录这张图片中的所有文字内容，逐字不要修改、不得概括、不得省略。
+
+要求:
+1. 逐字摘录，确保不漏字、不漏行；聊天截图按「发送者: 内容」逐行摘录
+2. 表格必须用 Markdown 表格格式输出（用 | 分隔单元格）
+3. 页眉/页脚/页码保留；摘录结尾另起一行用「【页码: X】」标注（页面上无页码则写「【页码: 无】」）
+4. 段落结构、缩进、空行尽量保持原样
+5. 图章/印章/签名用【印章】【签名】标注在对应位置
+6. 模糊或无法辨认的字符用 [?] 替代
+7. 无文字内容则写「(本页无文字)【页码: 无】」
+
+请开始摘录:"""
+
+
+def _ocr_compress(path):
+    """图片压到 GLM 限制内（≤5MB、单边≤6000px），返回 (b64, mime)。"""
+    from PIL import Image
+    img = Image.open(path)
+    if img.mode not in ("RGB", "RGBA", "L"):
+        img = img.convert("RGB")
+    w, h = img.size
+    if max(w, h) > 6000:
+        scale = 6000 / max(w, h)
+        img = img.resize((int(w * scale), int(h * scale)), Image.LANCZOS)
+    buf = io.BytesIO()
+    img.convert("RGB").save(buf, format="PNG", optimize=True)
+    if buf.tell() <= 5 * 1024 * 1024:
+        return base64.b64encode(buf.getvalue()).decode(), "image/png"
+    for quality in (95, 85, 75, 65, 55):
+        buf = io.BytesIO()
+        img.convert("RGB").save(buf, format="JPEG", quality=quality, optimize=True)
+        if buf.tell() <= 5 * 1024 * 1024:
+            return base64.b64encode(buf.getvalue()).decode(), "image/jpeg"
+    img = img.resize((int(img.size[0] * 0.5), int(img.size[1] * 0.5)), Image.LANCZOS)
+    buf = io.BytesIO()
+    img.convert("RGB").save(buf, format="JPEG", quality=60)
+    return base64.b64encode(buf.getvalue()).decode(), "image/jpeg"
+
+
+def _glm_extract_image(b64, mime):
+    """调 GLM-4V-Flash 摘录单张图；429/5xx/超时固定 1 秒重试最多 5 次。"""
+    payload = {"model": GLM_MODEL, "messages": [{"role": "user", "content": [
+        {"type": "image_url", "image_url": {"url": "data:%s;base64,%s" % (mime, b64)}},
+        {"type": "text", "text": OCR_PROMPT}]}]}
+    last = None
+    for attempt in range(1, OCR_MAX_RETRY + 1):
+        try:
+            r = requests.post(GLM_API_URL, timeout=120, json=payload,
+                              headers={"Authorization": "Bearer " + GLM_KEY,
+                                       "Content-Type": "application/json"})
+            if r.status_code == 429 or r.status_code >= 500:
+                last = "HTTP %s" % r.status_code
+                if attempt < OCR_MAX_RETRY:
+                    time.sleep(OCR_RETRY_DELAY)
+                    continue
+                return None, last
+            if r.status_code >= 400:
+                return None, "HTTP %s: %s" % (r.status_code, r.text[:200])
+            content = (((r.json().get("choices") or [{}])[0]).get("message") or {}).get("content", "")
+            if not content:
+                last = "空响应"
+                if attempt < OCR_MAX_RETRY:
+                    time.sleep(OCR_RETRY_DELAY)
+                    continue
+                return None, last
+            return content, None
+        except requests.RequestException as e:
+            last = str(e)[:200]
+            if attempt < OCR_MAX_RETRY:
+                time.sleep(OCR_RETRY_DELAY)
+    return None, last or "未知错误"
+
+
+def _ocr_one_image(path):
+    try:
+        b64, mime = _ocr_compress(path)
+    except Exception as e:
+        return None, "预处理失败: %s" % e
+    return _glm_extract_image(b64, mime)
+
+
+def _ocr_pdf_to_markdown(pdf_path):
+    """pdftoppm 拆页后并发摘录，合并为带页码结构的 Markdown。"""
+    import tempfile
+    work = tempfile.mkdtemp(prefix="wxocr_")
+    try:
+        p = subprocess.run(["pdftoppm", "-r", "150", "-png", str(pdf_path),
+                            os.path.join(work, "pg")], capture_output=True, timeout=300)
+        if p.returncode != 0:
+            return None, "pdftoppm 失败: %s" % p.stderr.decode("utf-8", "replace")[:200]
+        pages = sorted(glob.glob(os.path.join(work, "pg-*.png")))
+        if not pages:
+            return None, "PDF 未拆出任何页面"
+        truncated = len(pages) > OCR_MAX_PDF_PAGES
+        if truncated:
+            pages = pages[:OCR_MAX_PDF_PAGES]
+        with ThreadPoolExecutor(max_workers=OCR_CONCURRENCY) as ex:
+            futs = {pg: ex.submit(_ocr_one_image, pg) for pg in pages}
+            results = {pg: fut.result() for pg, fut in futs.items()}
+        parts = []
+        ok = 0
+        for i, pg in enumerate(pages, start=1):
+            text, err = results[pg]
+            parts.append("## 第 %d 页" % i)
+            parts.append("")
+            if err:
+                parts.append("> ⚠️ 本页摘录失败：%s" % err)
+            else:
+                ok += 1
+                parts.append(text)
+            parts.append("")
+        head = "共 %d 页，成功 %d 页%s\n\n" % (
+            len(pages), ok, "（仅解析前 %d 页）" % OCR_MAX_PDF_PAGES if truncated else "")
+        return head + "\n".join(parts).strip(), None
+    finally:
+        shutil.rmtree(work, ignore_errors=True)
+
+
+_ocr_lock = threading.Lock()
+_ocr_running = set()
+
+
+def wxchat_kick_ocr(sid):
+    """异步解析该分享的图片/PDF 附件；幂等（进行中不重复起线程，已完成的跳过）。"""
+    with _ocr_lock:
+        if sid in _ocr_running:
+            return
+        _ocr_running.add(sid)
+
+    def run():
+        try:
+            sh = load_share(sid)
+            if sh is None or sh.get("type") != "wxchat":
+                return
+            fdir = DATA / (sid + ".wxfiles")
+            fdir_resolved = fdir.resolve()
+            for att in sh["attachments"]:
+                if att.get("ocr_status") == "done":
+                    continue
+                ext = PurePosixPath(att["name"]).suffix.lower()
+                if ext not in _IMG_EXT and ext != ".pdf":
+                    continue
+                if "path" not in att:
+                    continue
+                path = (fdir / att["path"]).resolve()
+                if not str(path).startswith(str(fdir_resolved)) or not path.exists():
+                    continue
+                if att.get("size", 0) > OCR_MAX_FILE_MB * 1024 * 1024:
+                    att["ocr_status"] = "skipped"
+                    continue
+                att["ocr_status"] = "pending"
+                save_share(sh)
+                if ext == ".pdf":
+                    text, err = _ocr_pdf_to_markdown(path)
+                else:
+                    text, err = _ocr_one_image(str(path))
+                if text:
+                    att["ocr"] = text
+                    att["ocr_status"] = "done"
+                else:
+                    att["ocr_status"] = "failed"
+                    att["ocr_error"] = err
+                save_share(sh)
+            print("wxchat ocr done:", sid, flush=True)
+        except Exception as e:
+            print("wxchat ocr error:", sid, e, flush=True)
+        finally:
+            with _ocr_lock:
+                _ocr_running.discard(sid)
+
+    threading.Thread(target=run, daemon=True).start()
+
+
+def _wx_safe_name(name):
+    return re.sub(r'[\\/:*?"<>|]', "_", name)[:180]
+
+
+@app.post("/api/asr/wxchat")
+def upload_wxchat():
+    """上传微信聊天记录 zip：解析→存附件→建 30 天分享，同步返回分享链接。"""
+    user = authenticate()
+    if user is None:
+        return jsonify(error="unauthorized"), 401
+    f = request.files.get("file")
+    if f is None or not f.filename:
+        return jsonify(error="缺少 file 文件"), 400
+    display_name = (request.form.get("display_name") or "").strip()[:200]
+    title = display_name or Path(f.filename).stem or "聊天记录"
+    sid = uuid.uuid4().hex[:10]
+    tmp = DATA / (sid + ".wxzip.tmp")
+    f.save(tmp)
+    attachments = []
+    try:
+        chat, others = wxchat_parse_zip(tmp, title)
+        attachments = list(chat["attachments"])
+        fdir = DATA / (sid + ".wxfiles")
+        fdir.mkdir(exist_ok=True)
+        with zipfile.ZipFile(tmp) as zf:
+            base_to_info = {}
+            for info in zf.infolist():
+                if info.is_dir():
+                    continue
+                base = PurePosixPath(zip_entry_name(info).replace("\\", "/")).name
+                base_to_info.setdefault(base, info)
+            plan = []
+            for a in attachments:
+                info = base_to_info.get(a["name"])
+                if info is not None:
+                    plan.append((a, info))
+            for base, info in others:
+                a = {"name": base, "size": info.file_size, "unreferenced": True}
+                attachments.append(a)
+                plan.append((a, info))
+            for idx, (a, info) in enumerate(plan):
+                safe = "f%d_%s" % (idx, _wx_safe_name(a["name"]))
+                with zf.open(info) as fin, open(fdir / safe, "wb") as fout:
+                    shutil.copyfileobj(fin, fout)
+                a["path"] = safe
+    except zipfile.BadZipFile:
+        tmp.unlink(missing_ok=True)
+        return jsonify(error="不是有效的 zip 文件"), 400
+    except ValueError as e:
+        tmp.unlink(missing_ok=True)
+        shutil.rmtree(DATA / (sid + ".wxfiles"), ignore_errors=True)
+        return jsonify(error=str(e)), 400
+    finally:
+        tmp.unlink(missing_ok=True)
+    pwd = "".join(secrets.choice(PWD_ALPHABET) for _ in range(PWD_LENGTH))
+    share = {"share_id": sid, "pwd": pwd, "type": "wxchat",
+             "owner": user, "created_at": time.time(),
+             "expires_at": time.time() + WXCHAT_HOURS * 3600,
+             "validity_hours": WXCHAT_HOURS, "max_opens": 0, "opens": 0,
+             "filename": title, "chat": chat, "attachments": attachments}
+    save_share(share)
+    print("wxchat saved by", user, ":", sid, len(chat["messages"]), "msgs,",
+          len(attachments), "attachments", flush=True)
+    wxchat_kick_ocr(sid)
+    return jsonify(share_id=sid, pwd=pwd,
+                   url="%s/%s?pwd=%s" % (SHARE_BASE, sid, pwd),
+                   validity_hours=WXCHAT_HOURS, expires_at=share["expires_at"])
+
+
+def _wxchat_check(sid):
+    """sid/分享/类型校验，返回 share 或 None。"""
+    if not re.fullmatch(r"[0-9a-f]{6,32}", sid):
+        return None
+    sh = load_share(sid)
+    if sh is None or sh.get("type") != "wxchat":
+        return None
+    return sh
+
+
+def _wxchat_pwd_ok(sh, pwd):
+    return str(pwd or "").strip().upper() == str(sh["pwd"]).upper()
+
+
+@app.get("/api/asr/wxchat/list")
+def wxchat_list():
+    """我的聊天记录转存分享列表（设置页管理入口）。"""
+    user = authenticate()
+    if user is None:
+        return jsonify(error="unauthorized"), 401
+    now = time.time()
+    items = []
+    for p in DATA.glob("*.share.json"):
+        try:
+            sh = json.loads(p.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        if sh.get("type") != "wxchat" or sh.get("owner") != user:
+            continue
+        if now > sh.get("expires_at", 0):
+            continue
+        chat = sh.get("chat") or {}
+        items.append({
+            "share_id": sh["share_id"], "pwd": sh["pwd"],
+            "title": sh.get("filename") or "聊天记录",
+            "message_count": chat.get("message_count", 0),
+            "participant_count": len(chat.get("participants") or []),
+            "attachment_count": len(sh.get("attachments") or []),
+            "created_at": sh.get("created_at"),
+            "expires_at": sh.get("expires_at"),
+            "url": "%s/%s?pwd=%s" % (SHARE_BASE, sh["share_id"], sh["pwd"]),
+        })
+    items.sort(key=lambda x: x.get("created_at") or 0, reverse=True)
+    return jsonify(shares=items)
+
+
+@app.delete("/api/asr/wxchat/<sid>")
+def wxchat_delete(sid):
+    """删除我的聊天记录分享：删分享记录与附件目录。"""
+    user = authenticate()
+    if user is None:
+        return jsonify(error="unauthorized"), 401
+    sh = _wxchat_check(sid)
+    if sh is None or sh.get("owner") != user:
+        return jsonify(error="not found"), 404
+    (DATA / (sid + ".share.json")).unlink(missing_ok=True)
+    shutil.rmtree(DATA / (sid + ".wxfiles"), ignore_errors=True)
+    print("wxchat share deleted by", user, ":", sid, flush=True)
+    return jsonify(deleted=True)
+
+
+@app.get("/s/<sid>/chat.json")
+def wxchat_json(sid):
+    """Agent 阅读端点：结构化聊天记录 JSON，链接自带提取码即可访问，不计打开次数。"""
+    sh = _wxchat_check(sid)
+    if sh is None:
+        return jsonify(error="not found"), 404
+    if not _wxchat_pwd_ok(sh, request.args.get("pwd")):
+        return jsonify(error="forbidden"), 403
+    # nginx 反代后 Flask 只见 http，但站点仅经 https 暴露，附件链接统一 https
+    root = request.host_url.replace("http://", "https://").rstrip("/")
+    chat = json.loads(json.dumps(sh["chat"], ensure_ascii=False))  # 深拷贝再补 URL
+    wxchat_kick_ocr(sid)  # 服务重启丢掉的解析在这里兜底补跑
+    for m in chat["messages"]:
+        if "att" in m and m["att"] < len(sh["attachments"]):
+            a = sh["attachments"][m["att"]]
+            if "path" in a:
+                m["file_url"] = "%s/s/%s/file/%d?pwd=%s" % (root, sid, m["att"], sh["pwd"])
+            if "ocr" in a:
+                m["ocr_text"] = a["ocr"]  # 消息层直带解析结果，agent 读一条即得
+            elif a.get("ocr_status") == "pending":
+                m["ocr_status"] = "pending"
+    atts = []
+    for i, a in enumerate(sh["attachments"]):
+        item = {"name": a["name"], "size": a["size"],
+                "ocr_status": a.get("ocr_status", "none")}
+        if "path" in a:
+            item["url"] = "%s/s/%s/file/%d?pwd=%s" % (root, sid, i, sh["pwd"])
+        if "ocr" in a:
+            item["ocr"] = a["ocr"]
+        atts.append(item)
+    chat.pop("attachments")  # 用补好 URL 的 atts 替代原始附件表
+    return jsonify(title=chat.pop("title"), source=chat.pop("source"),
+                   attachments=atts,
+                   expires_at=sh["expires_at"], **chat)
+
+
+@app.get("/s/<sid>/file/<int:idx>")
+def wxchat_file(sid, idx):
+    """聊天记录附件下载：需提取码；不计打开次数。"""
+    sh = _wxchat_check(sid)
+    if sh is None:
+        return jsonify(error="not found"), 404
+    if not _wxchat_pwd_ok(sh, request.args.get("pwd")):
+        return jsonify(error="forbidden"), 403
+    if not (0 <= idx < len(sh["attachments"])):
+        return jsonify(error="not found"), 404
+    att = sh["attachments"][idx]
+    if "path" not in att:
+        return jsonify(error="附件不存在"), 404
+    fdir = DATA / (sid + ".wxfiles")
+    p = (fdir / att["path"]).resolve()
+    if not str(p).startswith(str(fdir.resolve())) or not p.exists():
+        return jsonify(error="附件不存在"), 404
+    mime = mimetypes.guess_type(att["name"])[0] or "application/octet-stream"
+    return send_file(p, mimetype=mime, as_attachment=False, download_name=att["name"])
+
+
+CHAT_PAGE_CSS = """
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:#ededed;font-family:-apple-system,'Segoe UI',Roboto,'Helvetica Neue','PingFang SC','Microsoft YaHei',sans-serif}
+.wrap{max-width:680px;margin:0 auto;padding:16px 12px 40px}
+h1{font-size:19px;color:#111;margin-bottom:6px;word-break:break-all}
+.meta{font-size:12px;color:#888;margin-bottom:12px}
+.bar{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:14px}
+.bar button,.bar a{font-size:13px;padding:7px 14px;border-radius:6px;border:1px solid #d0d0d0;background:#fff;color:#333;text-decoration:none;cursor:pointer}
+.chat{background:#ededed}
+.mrow{display:flex;gap:8px;margin-bottom:12px;align-items:flex-start}
+.avatar{flex:none;width:38px;height:38px;border-radius:5px;color:#fff;font-size:17px;line-height:38px;text-align:center;font-weight:500}
+.mcol{min-width:0;max-width:78%}
+.mlabel{font-size:12px;color:#999;margin-bottom:3px}
+.mlabel .mtime{margin-left:8px}
+.bubble{position:relative;background:#fff;border-radius:4px;padding:9px 12px;font-size:15px;color:#111;line-height:1.5;white-space:pre-wrap;word-break:break-word;display:inline-block}
+.bubble:before{content:'';position:absolute;left:-5px;top:12px;width:10px;height:10px;background:#fff;transform:rotate(45deg);border-radius:2px}
+.bubble.tagonly{color:#666}
+.fcard{display:flex;align-items:center;gap:10px;text-decoration:none;color:#111;min-width:200px}
+.ficon{flex:none;width:38px;height:38px;border-radius:4px;background:#5b7bd5;color:#fff;font-size:18px;line-height:38px;text-align:center}
+.fname{font-size:14px;word-break:break-all;max-width:230px}
+.fsize{font-size:12px;color:#999;margin-top:2px}
+.fdl{font-size:12px;color:#576b95;margin-top:4px;display:block}
+.others{margin-top:22px;padding:12px;background:#f7f7f7;border-radius:8px}
+.others h2{font-size:14px;color:#555;margin-bottom:8px}
+.others li{font-size:13px;color:#333;margin:4px 0 0 18px;word-break:break-all}
+.others a{color:#576b95;text-decoration:none}
+.bubble.media{padding:4px}
+.pic{max-width:100%;max-height:320px;border-radius:4px;display:block}
+.ocrwrap{width:100%}
+.ocrbtn{display:inline-block;font-size:12px;color:#576b95;margin-top:6px;cursor:pointer}
+.ocr{background:#f7f7f7;border-radius:6px;padding:8px;font-size:12px;line-height:1.5;white-space:pre-wrap;word-break:break-word;max-height:320px;overflow-y:auto;margin-top:4px;color:#333}
+#toast{display:none;position:fixed;left:50%;bottom:60px;transform:translateX(-50%);background:rgba(0,0,0,.75);color:#fff;font-size:13px;padding:8px 16px;border-radius:6px;z-index:9}
+"""
+
+CHAT_RENDER_JS = r"""
+var PALETTE=["#7cb342","#5c6bc0","#ef5350","#f4b400","#26a69a","#ab47bc","#42a5f5","#ff7043"];
+function esc(s){var d=document.createElement("div");d.textContent=s==null?"":String(s);return d.innerHTML;}
+function hsize(n){if(n>=1048576)return (n/1048576).toFixed(1)+" MB";if(n>=1024)return (n/1024).toFixed(0)+" KB";return n+" B";}
+var cmap={},ci=0;
+for(var i=0;i<CHAT.messages.length;i++){var s=CHAT.messages[i].sender;if(!(s in cmap))cmap[s]=ci++;}
+var h="";
+for(var i=0;i<CHAT.messages.length;i++){
+  var m=CHAT.messages[i];
+  var color=PALETTE[cmap[m.sender]%PALETTE.length];
+  var av=esc((m.sender||"?").substring(0,1));
+  var inner;
+  if(m.type==="file"){
+    var dl=m.att!=null?'<a class="fdl" href="/s/'+SID+'/file/'+m.att+'?pwd='+encodeURIComponent(PWD)+'">下载</a>':"";
+    inner='<div class="fcard"><div class="ficon">📄</div><div><div class="fname">'+esc(m.text)+'</div><div class="fsize">'+(m.size?hsize(m.size):"文件")+'</div>'+dl+'</div></div>';
+  }else if(m.type==="image"){
+    var src=m.att!=null?'/s/'+SID+'/file/'+m.att+'?pwd='+encodeURIComponent(PWD):"";
+    inner=src?'<a href="'+src+'" target="_blank"><img class="pic" src="'+src+'" loading="lazy"></a>':'<span class="tagonly">[图片]</span>';
+  }else if(m.type==="video"){
+    var vsrc=m.att!=null?'/s/'+SID+'/file/'+m.att+'?pwd='+encodeURIComponent(PWD):"";
+    inner=vsrc?'<video class="pic" src="'+vsrc+'" controls preload="metadata"></video>':'<span class="tagonly">[视频]</span>';
+  }else if(m.type==="voice"){
+    inner='<span class="tagonly">[语音]</span>';
+  }else{inner=esc(m.text);}
+  var ocrExtra="";
+  if(m.att!=null&&OCR[m.att]){
+    var A=OCR[m.att];
+    if(A.ocr){ocrExtra='<div class="ocrwrap"><a class="ocrbtn" onclick="toggleOcr(this)">查看解析结果</a><pre class="ocr" style="display:none">'+esc(A.ocr)+'</pre></div>';}
+    else if(A.ocr_status==="pending"){ocrExtra='<div class="ocrwrap"><a class="ocrbtn" style="color:#999;pointer-events:none">解析中，稍后刷新可见</a></div>';}
+  }
+  h+='<div class="mrow"><div class="avatar" style="background:'+color+'">'+av+'</div>'
+    +'<div class="mcol"><div class="mlabel"><span class="mname">'+esc(m.sender)+'</span>'
+    +'<span class="mtime">'+esc(m.time||"")+'</span></div><div class="bubble'
+    +(((m.type==="image"||m.type==="video")&&m.att!=null)?" media":(m.type!=="text"&&m.type!=="file"?" tagonly":""))+'">'+inner+'</div>'+ocrExtra+'</div></div>';
+}
+document.getElementById("chat").innerHTML=h;
+var _tt=null;
+function toast(m){var t=document.getElementById("toast");t.textContent=m;t.style.display="block";if(_tt)clearTimeout(_tt);_tt=setTimeout(function(){t.style.display="none";},1600);}
+function legacyCopy(t){var ta=document.createElement("textarea");ta.value=t;ta.style.position="fixed";ta.style.opacity="0";document.body.appendChild(ta);ta.focus();ta.select();try{document.execCommand("copy");}catch(e){}document.body.removeChild(ta);}
+function copyText(t,ok){if(navigator.clipboard&&navigator.clipboard.writeText){navigator.clipboard.writeText(t).then(ok,function(){legacyCopy(t);ok();});}else{legacyCopy(t);ok();}}
+function copyAll(){var t="";for(var i=0;i<CHAT.messages.length;i++){var m=CHAT.messages[i];t+="["+m.time+"] "+m.sender+": "+m.text+"\n";}copyText(t,function(){toast("复制成功");});}
+function toggleOcr(el){var p=el.nextElementSibling;var show=p.style.display==="none";p.style.display=show?"block":"none";el.textContent=show?"收起解析结果":"查看解析结果";}
+"""
+
+
+def wxchat_share_page(sh, sid):
+    """微信聊天记录分享页：原生风格的左侧气泡流 + 附件卡片 + Agent JSON 入口。"""
+    wxchat_kick_ocr(sid)  # 服务重启丢掉的解析在这里兜底补跑
+    chat = sh["chat"]
+    parts = "、".join(chat["participants"][:8]) + ("等" if len(chat["participants"]) > 8 else "")
+    meta = "%d 条消息 · %s · %s ~ %s · 轻舟浏览器转存" % (
+        chat["message_count"], parts,
+        chat.get("time_start") or "", chat.get("time_end") or "")
+    others = [(i, a) for i, a in enumerate(sh["attachments"]) if a.get("unreferenced")]
+    others_html = ""
+    if others:
+        items = "".join(
+            '<li>%s（%s）<a href="/s/%s/file/%d?pwd=%s">下载</a></li>'
+            % (html.escape(a["name"]), _human_size(a["size"]), sid, i, sh["pwd"])
+            for i, a in others)
+        others_html = ('<div class="others"><h2>其他附件（消息中未直接引用）</h2><ul>%s</ul></div>'
+                       % items)
+    # worker 只更新顶层 attachments，chat 内嵌副本不自动携带，页面从 OCRMAP 取
+    ocr_map = {}
+    for i, a in enumerate(sh["attachments"]):
+        if a.get("ocr") or a.get("ocr_status"):
+            ocr_map[i] = {"ocr": a.get("ocr"), "ocr_status": a.get("ocr_status", "none")}
+    ocr_js = json.dumps(ocr_map, ensure_ascii=False).replace("</", "<\\/")
+    chat_js = json.dumps(chat, ensure_ascii=False).replace("</", "<\\/")
+    body = ('<div class="wrap"><h1>%s</h1><div class="meta">%s</div>'
+            '<div class="bar">'
+            '<button onclick="copyAll()">复制全文</button>'
+            '<a href="/s/%s/chat.json?pwd=%s">Agent 数据（JSON）</a>'
+            '</div><div class="chat" id="chat"></div>%s'
+            '<div id="toast"></div>'
+            '<style>%s</style>'
+            '<script>var CHAT=%s;var OCR=%s;var SID="%s";var PWD=%s;</script>'
+            '<script>%s</script></body></html>'
+            % (html.escape(chat["title"]), html.escape(meta), sid, sh["pwd"],
+               others_html, CHAT_PAGE_CSS, chat_js, ocr_js, sid,
+               json.dumps(str(sh["pwd"])), CHAT_RENDER_JS))
+    return ("<!doctype html><html lang=\"zh\"><head><meta charset=\"utf-8\">"
+            "<meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">"
+            "<title>%s</title></head><body>%s"
+            % (html.escape(chat["title"]), body))
+
+
+def _human_size(n):
+    if n >= 1048576:
+        return "%.1f MB" % (n / 1048576)
+    if n >= 1024:
+        return "%d KB" % (n // 1024)
+    return "%d B" % n
+
+
+def wxchat_purge_loop():
+    """聊天记录附件目录清理：分享过期 7 天后整目录删除（与分享记录清理节奏一致）。"""
+    while True:
+        try:
+            now = time.time()
+            for p in DATA.glob("*.wxfiles"):
+                sid = p.name[:-len(".wxfiles")]
+                sh = load_share(sid)
+                if sh is None or now > sh.get("expires_at", 0) + 7 * 86400:
+                    shutil.rmtree(p, ignore_errors=True)
+                    print("purged expired wxfiles:", p.name, flush=True)
+        except Exception as e:
+            print("wxchat purge error:", e, flush=True)
+        time.sleep(3600)
+
+
+if __name__ == "__main__":
+    users = load_users()
+    default_owner = sorted(set(users.values()))[0] if users else "用户A"
+    for p in DATA.glob("*.json"):
+        if p.name.endswith(".share.json"):
+            continue
+        try:
+            st = json.loads(p.read_text(encoding="utf-8"))
+        except Exception:
+            continue
+        changed = False
+        if st.get("status") in ("PENDING", "RUNNING"):
+            st["status"] = "FAILED"
+            st["error"] = "服务重启中断"
+            changed = True
+        if not st.get("owner"):
+            st["owner"] = default_owner  # 历史任务归入首位用户
+            changed = True
+        if changed:
+            save_task(st)
+    threading.Thread(target=audio_purge_loop, daemon=True).start()
+    threading.Thread(target=wxchat_purge_loop, daemon=True).start()
+    app.run(host="127.0.0.1", port=CFG.get("port", 8720), threaded=True)
