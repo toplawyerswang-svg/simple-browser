@@ -1803,6 +1803,9 @@ def upload_wxchat():
         return jsonify(error=str(e)), 400
     finally:
         tmp.unlink(missing_ok=True)
+    names = load_wxnames(user)
+    # 真名快照：生成时固化显示名，此后映射改动只影响新分享
+    chat["name_display"] = {n: names.get(n, n) for n in chat["participants"]}
     pwd = "".join(secrets.choice(PWD_ALPHABET) for _ in range(PWD_LENGTH))
     share = {"share_id": sid, "pwd": pwd, "type": "wxchat",
              "owner": user, "created_at": time.time(),
@@ -1851,14 +1854,21 @@ def wxchat_list():
             continue
         chat = sh.get("chat") or {}
         participants = chat.get("participants") or []
-        names = load_wxnames(sh.get("owner", ""))
+        snapshot = chat.get("name_display")
+        if isinstance(snapshot, dict):
+            disp_list = [snapshot.get(n, n) for n in participants]
+        else:
+            names = load_wxnames(sh.get("owner", ""))
+            disp_list = [names.get(n, n) for n in participants]
+            chat["name_display"] = {n: disp_list[i] for i, n in enumerate(participants)}
+            save_share(sh)
         items.append({
             "share_id": sh["share_id"], "pwd": sh["pwd"],
             "title": sh.get("filename") or "聊天记录",
             "message_count": chat.get("message_count", 0),
             "participant_count": len(participants),
             "participants": participants,
-            "participants_display": [names.get(n, n) for n in participants],
+            "participants_display": disp_list,
             "attachment_count": len(sh.get("attachments") or []),
             "created_at": sh.get("created_at"),
             "expires_at": sh.get("expires_at"),
@@ -1896,13 +1906,17 @@ def wxchat_json(sid):
     chat = json.loads(json.dumps(sh["chat"], ensure_ascii=False))  # 深拷贝再补 URL
     wxchat_kick_ocr(sid)  # 服务重启丢掉的解析在这里兜底补跑
     names = load_wxnames(sh.get("owner", ""))
-    realnames = {n: names[n] for n in chat.get("participants") or [] if names.get(n)}
+    realnames = chat.get("name_display")
+    if not isinstance(realnames, dict):
+        # 旧分享无快照：惰性固化当前映射
+        realnames = {n: names.get(n, n) for n in chat.get("participants") or []}
+        chat["name_display"] = realnames
+        save_share(sh)
     self_nick = names.get("__self__")
     if self_nick and self_nick not in (chat.get("participants") or []):
         self_nick = None
     for m in chat["messages"]:
-        if m["sender"] in realnames:
-            m["realname"] = realnames[m["sender"]]
+        m["realname"] = realnames.get(m["sender"], m["sender"])
         m["is_self"] = bool(self_nick and m["sender"] == self_nick)
         if "att" in m and m["att"] < len(sh["attachments"]):
             a = sh["attachments"][m["att"]]
@@ -2048,7 +2062,12 @@ def wxchat_share_page(sh, sid):
     self_nick = names.get("__self__")
     if self_nick and self_nick not in chat["participants"]:
         self_nick = None
-    display = {n: names[n] for n in chat["participants"] if names.get(n)}
+    display = chat.get("name_display")
+    if not isinstance(display, dict):
+        # 旧分享无快照：惰性固化当前映射，此后映射改动不再影响该分享
+        display = {n: names.get(n, n) for n in chat["participants"]}
+        chat["name_display"] = display
+        save_share(sh)
     disp_parts = [display.get(n, n) for n in chat["participants"]]
     parts = "、".join(disp_parts[:8]) + ("等" if len(disp_parts) > 8 else "")
     meta = "%d 条消息 · %s · %s ~ %s · 轻舟浏览器转存" % (
