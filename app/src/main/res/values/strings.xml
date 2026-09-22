@@ -23,6 +23,11 @@
     <string name="identity_created">已创建身份%1$d</string>
     <string name="identity_unsupported">当前系统 WebView 版本过低，不支持多账号身份（需 WebView 116 及以上）</string>
     <string name="identity_max_reached">最多支持 %1$d 个身份</string>
+    <string name="identity_login_hint_title">发现该网站的其他身份登录状态</string>
+    <string name="identity_login_hint_msg">当前标签的身份%2$d在此网站没有登录数据；身份%1$d保存过该网站的登录状态。要用身份%1$d重新打开吗？</string>
+    <string name="identity_login_hint_switch">用身份%1$d打开</string>
+    <string name="identity_login_hint_stay">留在本页</string>
+    <string name="identity_login_hint_never">此网站不再提示</string>
     <string name="toast_shortcut_identity">已请求添加到主屏幕（身份%1$d）</string>
     <string name="menu_open_bookmarks">打开书签</string>
     <string name="menu_settings">设置</string>

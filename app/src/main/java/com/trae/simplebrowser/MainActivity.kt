@@ -130,6 +130,9 @@ class MainActivity : AppCompatActivity() {
     /** 已创建的身份数量（含身份1）；仅在设备支持多身份时可能大于 1 */
     private var identityCount = 1
 
+    /** 本会话已出结论的「站点|身份」组合（当前身份已有 cookie、或已弹过提示），不再重复探测/打扰 */
+    private val loginHintSettledKeys = mutableSetOf<String>()
+
     /** 当前标签的 WebView；标签集合永不为空（最后一个标签关闭时立即补开新标签） */
     private val currentWebView: WebView
         get() = tabWebViews[tabManager.currentId]
@@ -371,6 +374,67 @@ class MainActivity : AppCompatActivity() {
     private fun tabIdOf(view: WebView): Long? =
         tabWebViews.entries.firstOrNull { it.value === view }?.key
 
+    // ---------- 跨身份登录态提示 ----------
+    // 场景：同一网站在身份1 登录过，之后从身份2/3 的标签再打开时表现为"登录丢了"。
+    // 此时提示用户该站登录态还在另一个身份里，可一键切回；只提示不自动切换，
+    // 因为多身份的意义就是同站多账号共存，自动跳身份会破坏这个语义。
+
+    /**
+     * 当前标签身份在某站没有任何 cookie、而另一身份存有登录样式 cookie 时弹提示。
+     * 「站点|身份」只在结论确定时登记：当前身份已有 cookie（无需提示）或已弹过提示；
+     * 结论未定（两边都没数据）不登记，下次导航再探，避免首跳探测过早错过后续登录态变化。
+     * 注意：命名 Profile 的 CookieManager.getCookie 在非主线程上恒返回 null（真机实测、无异常），
+     * 因此探测必须留在主线程，不能挪去后台线程池。
+     */
+    private fun maybeShowCrossIdentityLoginHint(view: WebView, url: String) {
+        if (!ProfileManager.isSupported() || !url.startsWith("http")) return
+        if (view !== currentWebViewSafe()) return
+        val tabId = tabIdOf(view) ?: return
+        val tab = tabManager.tabs.firstOrNull { it.id == tabId } ?: return
+        val host = runCatching { Uri.parse(url).host }.getOrNull()?.takeIf { it.isNotBlank() } ?: return
+        val key = "$host|${tab.profile}"
+        if (key in loginHintSettledKeys) return
+        if (host in AppPrefs.getLoginHintDisabledHosts(this)) return
+
+        val currentCookies = runCatching { ProfileManager.cookieManager(tab.profile).getCookie(url) }.getOrNull()
+        if (!currentCookies.isNullOrEmpty()) {
+            loginHintSettledKeys.add(key) // 本身份在该站有数据，会话内免打扰
+            return
+        }
+        val identityCount = AppPrefs.getIdentityCount(this)
+        val found = (1..identityCount).firstOrNull { i ->
+            val name = ProfileManager.profileNameOf(i)
+            if (name == tab.profile) return@firstOrNull false
+            val cookies = runCatching { ProfileManager.cookieManager(name).getCookie(url) }.getOrNull()
+            !cookies.isNullOrEmpty() && looksLikeLoginCookies(cookies)
+        } ?: return
+        loginHintSettledKeys.add(key)
+        showCrossIdentityLoginHintDialog(tabId, url, found, host)
+    }
+
+    /** 登录样式 cookie 启发式：access_token / sessionid / auth / passport 一类名字；统计类（_ga、MUID 等）不命中 */
+    private fun looksLikeLoginCookies(cookieHeader: String): Boolean =
+        Regex("token|sess|auth|login|passport|jwt|ticket|\\bsid", RegexOption.IGNORE_CASE)
+            .containsMatchIn(cookieHeader)
+
+    private fun showCrossIdentityLoginHintDialog(tabId: Long, url: String, identity: Int, host: String) {
+        val currentIdentity = ProfileManager.indexOfProfileName(
+            tabManager.tabs.firstOrNull { it.id == tabId }?.profile ?: ProfileManager.DEFAULT_PROFILE
+        )
+        AlertDialog.Builder(this)
+            .setTitle(getString(R.string.identity_login_hint_title))
+            .setMessage(getString(R.string.identity_login_hint_msg, identity, currentIdentity))
+            .setPositiveButton(getString(R.string.identity_login_hint_switch, identity)) { _, _ ->
+                val newTabId = openNewTab(url, identity)
+                if (newTabId != -1L) closeTab(tabId)
+            }
+            .setNeutralButton(R.string.identity_login_hint_never) { _, _ ->
+                AppPrefs.addLoginHintDisabledHost(this, host)
+            }
+            .setNegativeButton(R.string.identity_login_hint_stay, null)
+            .show()
+    }
+
     private val fileChooserLauncher =
         registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
             val callback = filePathCallback
@@ -484,6 +548,10 @@ class MainActivity : AppCompatActivity() {
             // 身份快捷方式：新开该身份标签并加载目标网址
             openNewTab(url?.takeIf { it.isNotBlank() } ?: homeUrl(), identity)
             Toast.makeText(this, getString(R.string.identity_opened, identity), Toast.LENGTH_SHORT).show()
+        } else if (intent.hasExtra(EXTRA_IDENTITY) && currentTabIdentity() != 1) {
+            // 身份1 快捷方式：当前标签不是身份1 时新开身份1标签，
+            // 避免"身份1的快捷方式却在身份2/3标签里打开、登录态对不上"
+            openNewTab(url?.takeIf { it.isNotBlank() } ?: homeUrl(), 1)
         } else if (!url.isNullOrBlank()) {
             Log.i(logTag, "onNewIntent -> loadUrl: $url")
             loadUrl(url)
@@ -935,6 +1003,7 @@ class MainActivity : AppCompatActivity() {
                     updateBookmarkIcon()
                     updateAdBadge()
                 }
+                maybeShowCrossIdentityLoginHint(view, url)
                 runMixedContentFixThrottled(view)
             }
 
@@ -2559,10 +2628,9 @@ class MainActivity : AppCompatActivity() {
         val shortLabel = label.trim().ifBlank { url }.take(20)
 
         val intent = Intent(Intent.ACTION_VIEW, Uri.parse(url), this, MainActivity::class.java)
-        if (identity > 1) {
-            // 快捷方式记住身份：打开时以对应 Profile 恢复该账号登录态
-            intent.putExtra(EXTRA_IDENTITY, identity)
-        }
+        // 快捷方式记住身份：打开时以对应 Profile 恢复该账号登录态。
+        // 身份1 也要显式写入：点击时靠"是否带该 extra"与普通外链区分，保证回到身份1。
+        intent.putExtra(EXTRA_IDENTITY, identity)
         val shortcutId = "pin_${url.hashCode()}_${SystemClock.uptimeMillis()}"
         val shortcut = ShortcutInfo.Builder(this, shortcutId)
             .setShortLabel(shortLabel)
