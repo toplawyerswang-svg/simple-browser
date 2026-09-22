@@ -26,6 +26,7 @@ import android.view.KeyEvent
 import android.view.View
 import android.view.inputmethod.EditorInfo
 import android.webkit.ConsoleMessage
+import android.webkit.HttpAuthHandler
 import android.webkit.WebChromeClient
 import android.webkit.WebSettings
 import android.webkit.ValueCallback
@@ -35,6 +36,7 @@ import android.webkit.WebResourceResponse
 import android.webkit.WebViewDatabase
 import android.webkit.WebView
 import android.webkit.WebViewClient
+import android.widget.CheckBox
 import android.widget.EditText
 import android.widget.PopupMenu
 import android.widget.Toast
@@ -48,6 +50,7 @@ import com.trae.simplebrowser.core.DownloadKind
 import com.trae.simplebrowser.core.DownloadRecord
 import com.trae.simplebrowser.core.DownloadStatus
 import com.trae.simplebrowser.core.HistoryStore
+import com.trae.simplebrowser.core.HttpAuthStore
 import com.trae.simplebrowser.core.IconCropMath
 import com.trae.simplebrowser.core.MediaProbeLogic
 import com.trae.simplebrowser.core.MultiFingerGestureTracker
@@ -97,6 +100,8 @@ class MainActivity : AppCompatActivity() {
     private val collectVideoUrlJs = """(function(){var vs=document.querySelectorAll('video');var best='';var bestArea=0;for(var i=0;i<vs.length;i++){var v=vs[i];var s=v.currentSrc||v.src||'';if(!s){var q=v.querySelector('source');if(q)s=q.src||''}if(!s)continue;var area=(v.videoWidth||v.clientWidth||0)*(v.videoHeight||v.clientHeight||0);if(!v.paused&&!v.ended){return s}if(area>=bestArea){bestArea=area;best=s}}return best})()"""
     private var lastMixedContentFixAtMs: Long = 0
     private var lastPopupBlockedToastAtMs: Long = 0
+    /** Basic 认证登录框是否正在展示：并发 401（主文档+子资源同时质询）时只弹一个，其余直接 cancel */
+    private var httpAuthDialogShowing = false
     private var currentFavicon: Bitmap? = null
     private var filePathCallback: ValueCallback<Array<Uri>>? = null
     private var pendingCapturedUri: Uri? = null
@@ -1030,6 +1035,15 @@ class MainActivity : AppCompatActivity() {
                 Log.e(logTag, "SSL error: ${error.primaryError} url=${error.url}")
                 handler.cancel()
             }
+
+            override fun onReceivedHttpAuthRequest(
+                view: WebView,
+                handler: HttpAuthHandler,
+                host: String?,
+                realm: String?
+            ) {
+                showHttpAuthPrompt(handler, host, realm)
+            }
         }
 
         webView.webChromeClient = object : WebChromeClient() {
@@ -1590,6 +1604,60 @@ class MainActivity : AppCompatActivity() {
             getString(if (desktop) R.string.toast_desktop_ua_on else R.string.toast_desktop_ua_off),
             Toast.LENGTH_SHORT
         ).show()
+    }
+
+    /**
+     * HTTP Basic 认证登录弹窗（WebView 默认静默取消 401，必须由应用实现）：
+     * - 有「记住的密码」则预填账号密码，点「登录」即可；
+     * - 勾选记住则按 域名+区域 保存，取消勾选清除已存密码；
+     * - 登录成功后引擎自带会话级凭据缓存，同站子资源/XHR 不再质询；
+     * - 并发 401 只弹一个窗，其余直接 cancel，避免弹窗叠加。
+     */
+    private fun showHttpAuthPrompt(handler: HttpAuthHandler, host: String?, realm: String?) {
+        if (isFinishing || httpAuthDialogShowing) {
+            handler.cancel()
+            return
+        }
+        httpAuthDialogShowing = true
+        Log.i(logTag, "HTTP auth prompt: host=$host realm=$realm")
+        val saved = HttpAuthStore.get(this, host, realm)
+        val content = layoutInflater.inflate(R.layout.dialog_http_auth, null)
+        val userInput = content.findViewById<EditText>(R.id.http_auth_username)
+        val passInput = content.findViewById<EditText>(R.id.http_auth_password)
+        val rememberBox = content.findViewById<CheckBox>(R.id.http_auth_remember)
+        saved?.let { (user, pass) ->
+            userInput.setText(user)
+            passInput.setText(pass)
+        }
+        rememberBox.isChecked = saved != null
+        val dialog = AlertDialog.Builder(this)
+            .setTitle(getString(R.string.http_auth_dialog_message, host.orEmpty()))
+            .setView(content)
+            .setPositiveButton(R.string.http_auth_login, null)
+            .setNegativeButton(android.R.string.cancel) { _, _ -> handler.cancel() }
+            .setOnCancelListener { handler.cancel() } // 返回键 / 点窗外关闭
+            .show()
+        dialog.setOnDismissListener { httpAuthDialogShowing = false }
+        dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener {
+            val user = userInput.text.toString()
+            val pass = passInput.text.toString()
+            if (rememberBox.isChecked) {
+                HttpAuthStore.put(this, host, realm, user, pass)
+            } else {
+                HttpAuthStore.clear(this, host, realm)
+            }
+            dialog.dismiss()
+            handler.proceed(user, pass)
+        }
+        // 密码框按回车/完成键直接登录
+        passInput.setOnEditorActionListener { _, actionId, event ->
+            val isDone = actionId == EditorInfo.IME_ACTION_DONE ||
+                (event != null && event.keyCode == KeyEvent.KEYCODE_ENTER)
+            if (isDone) {
+                dialog.getButton(AlertDialog.BUTTON_POSITIVE).performClick()
+            }
+            isDone
+        }
     }
 
     /** 网页内查找栏：输入实时查找，▲▼ 跳转匹配项 */

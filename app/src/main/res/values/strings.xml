@@ -351,4 +351,9 @@
     <string name="setting_clear_none">请至少选择一项</string>
     <string name="setting_clear_done">清理完成</string>
     <string name="toast_cache_cleared">网页缓存已清理</string>
+    <string name="http_auth_dialog_message">%1$s 需要账号密码登录</string>
+    <string name="http_auth_username_hint">账号</string>
+    <string name="http_auth_password_hint">密码</string>
+    <string name="http_auth_remember">记住密码</string>
+    <string name="http_auth_login">登录</string>
 </resources>
