@@ -7,6 +7,15 @@
 2. `python build/wxchat/patch_app.py` / `patch_ocr.py`（幂等补丁）→ 生成 app.py
 3. scp 覆盖服务器 → `systemctl restart asrsvc` → `grep` 验证路由
 
+## ASR 模型（2026-09-24 切换）
+
+- `config.json` 的 `asr_model` 已从 `fun-asr` 切到 **`qwen-audio-3.1-asr-flash-filetrans`**（纯配置切换，app.py 零改动）
+- 同属百炼 FunAudio-ASR RESTful 文件识别通道；A/B 实测（同段 4 说话人录音）输出结构完全兼容
+  （transcripts/sentences 的 begin_time/end_time/speaker_id/text 一致），断句更细、标点更好，
+  顶层多一个 `usage` 字段（无影响）
+- 回滚：`/root/asrsvc-config-backup-20260924.json` 覆盖回 `/opt/asrsvc/config.json` 后
+  `systemctl restart asrsvc`
+
 ## 微信聊天记录转存（v1.9.0+）
 
 - `POST /api/asr/wxchat` 上传 `聊天记录_*.zip`（GBK 条目名），解析建 30 天分享
