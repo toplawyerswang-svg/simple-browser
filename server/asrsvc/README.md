@@ -24,3 +24,26 @@
 - `GET /s/<sid>/file/<idx>` 附件下载；`DELETE /api/asr/wxchat/<sid>` 删除
 - 附件视觉解析：GLM-4V-Flash（config.json `glm_vision_api_key`），
   PDF 经 pdftoppm 拆页上限 30 页，异步 worker 幂等补跑
+
+## 长音频分流 FunASR（2026-09-29 完成开发与双分支实测，待部署）
+
+- **规则**：单文件时长 > `config.json` 的 `asr_local_threshold_sec`（默认 10800 秒 = 3 小时）
+  → 走 SER8 本地 FunASR（`funasr_url`，零成本）；其余照旧百炼 qwen。
+  FunASR 调用失败自动回落 qwen（任务不失败，`engine=funasr-fallback-qwen`）。
+  **不配置 `funasr_url` = 分流关闭，行为与旧版完全一致**（灰度开关）。
+- **SER8 服务**：`funasr.service`（`/opt/funasr-svc`，venv 自带 torch-cpu+funasr，
+  绑 `100.100.19.0:8740` 仅 tailnet 可达 + wait-ips drop-in；paraformer-zh + fsmn-vad
+  + ct-punc + cam++，CPU 推理 MODEL_LOCK 串行）。源码本仓 `funasr_svc.py`。
+  实测 17.7 分钟音频 75 秒（RTF≈0.069）；3 小时音频预估 ~15 分钟。
+- **结果格式**：服务端按与 `build_segments` 同规则合并（同说话人间隔≤1.5s），
+  返回 segments 字段与百炼通道完全同构（speaker/begin_ms/end_ms/text/begin/end），
+  方言改写/声纹/分享全链路复用，**APP 零改动**。任务新增 `engine` 字段
+  （funasr-local / funasr-fallback-qwen；qwen 路径无此字段，向后兼容）。
+- **双分支实测**（ECS 测试实例 8721，生产未动）：
+  A：1064s 样本（阈值600）→ FunASR 75s SUCCEEDED，116 段 2 说话人，无 dash_task_id；
+  B：30s 片段（阈值99999）→ qwen 50s SUCCEEDED，有 dash_task_id，段格式一致。
+- **部署**：① `scp server/asrsvc/app.py → ECS:/opt/asrsvc/app.py`（先备份原文件）
+  ② ECS config.json 增 `"funasr_url": "http://100.100.19.0:8740"` ③ `systemctl restart asrsvc`
+  ④ grep 验证 funasr_transcribe 路由 + 走一单真实任务看 engine 字段
+  ⑤ 收尾：ECS 看门狗加 `funasr:8740:/healthz` 探针（服务起稳后再加）。
+- **回滚**：备份的 app.py 覆盖回 + restart 即可；config 删掉 `funasr_url` 亦可单独关闭分流。

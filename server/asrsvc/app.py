@@ -75,6 +75,8 @@ VP_AUTO_THRESHOLD = 0.72     # 高置信：直接标人名
 VP_TENTATIVE_THRESHOLD = 0.60  # 中置信：标"名字？"待确认
 VP_MAX_EMBEDDINGS = 5        # 每人滚动保留的声纹样本数
 SAMPLE_RATE = 16000
+FUNASR_URL = CFG.get("funasr_url", "").rstrip("/")  # SER8 本地FunASR服务；空=不分流
+FUNASR_THRESHOLD_SEC = float(CFG.get("asr_local_threshold_sec", 10800))  # 单文件超此时长走本地引擎（默认3小时）
 
 app = Flask(__name__)
 app.config["MAX_CONTENT_LENGTH"] = MAX_AUDIO_MB * 1024 * 1024
@@ -637,6 +639,37 @@ def generate_summary_todos(st):
         _gen_inflight.discard(tid)
 
 
+def probe_audio_seconds(path):
+    """ffprobe 取媒体时长（秒），失败抛异常。"""
+    r = subprocess.run(
+        ["ffprobe", "-v", "error", "-show_entries", "format=duration",
+         "-of", "default=noprint_wrappers=1:nokey=1", str(path)],
+        capture_output=True, timeout=120)
+    if r.returncode != 0:
+        raise RuntimeError("ffprobe失败: " + r.stderr.decode(errors="ignore")[-120:])
+    return float(r.stdout.decode().strip())
+
+
+def funasr_transcribe(audio_path, with_spk):
+    """调 SER8 本地 FunASR 服务，返回与百炼通道同构的 result 字典。"""
+    with open(audio_path, "rb") as f:
+        r = requests.post(FUNASR_URL + "/transcribe",
+                          files={"file": (audio_path.name, f)},
+                          data={"diarize": "1" if with_spk else "0"},
+                          timeout=14400)  # 超长音频转换+识别可达小时级
+    r.raise_for_status()
+    j = r.json()
+    segments = j.get("segments") or []
+    if not segments:
+        raise RuntimeError("FunASR返回空结果: " + json.dumps(j, ensure_ascii=False)[:200])
+    return {
+        "duration_ms": j.get("duration_ms"),
+        "segments": segments,
+        "text": "".join(s["text"] for s in segments),
+        "engine": "funasr-local",
+    }
+
+
 def worker(tid):
     st = load_task(tid)
     audio = DATA / (tid + ".audio")
@@ -659,28 +692,47 @@ def worker(tid):
                 raise RuntimeError("视频音轨提取失败: " +
                                    rr.stderr.decode(errors="ignore")[-200:])
             upload_raw.unlink(missing_ok=True)
-        st["status"] = "RUNNING"
-        st["stage"] = "上传音频"
-        save_task(st)
-        pol = get_upload_policy()
-        oss_url = upload_to_oss(pol, audio, tid + ".audio")
-        st["stage"] = "提交识别任务"
-        save_task(st)
-        dash_tid = submit_asr(oss_url, st["options"].get("diarize", True))
-        st["dash_task_id"] = dash_tid
-        st["stage"] = "等待识别"
-        save_task(st)
-        turl = poll_asr(dash_tid, st)
-        st["stage"] = "整理结果"
-        save_task(st)
-        tj = requests.get(turl, timeout=120).json()
         with_spk = bool(st["options"].get("diarize"))
-        segments = build_segments(tj, with_spk)
-        result = {
-            "duration_ms": (tj.get("properties") or {}).get("original_duration_in_milliseconds"),
-            "segments": segments,
-            "text": "".join(s["text"] for s in segments),
-        }
+        result = None
+        if FUNASR_URL:
+            # 长音频分流：单文件超过阈值走 SER8 本地FunASR（零成本），失败自动回落百炼qwen
+            try:
+                _sec = probe_audio_seconds(audio)
+            except Exception as e:
+                print("ffprobe duration failed:", e, flush=True)
+                _sec = None
+            if _sec is not None and _sec > FUNASR_THRESHOLD_SEC:
+                st["status"] = "RUNNING"
+                st["stage"] = "超长音频转本地FunASR"
+                save_task(st)
+                try:
+                    result = funasr_transcribe(audio, with_spk)
+                    st["engine"] = "funasr-local"
+                except Exception as e:
+                    print("funasr-local failed, fallback to qwen:", repr(e), flush=True)
+                    st["engine"] = "funasr-fallback-qwen"
+        if result is None:
+            st["status"] = "RUNNING"
+            st["stage"] = "上传音频"
+            save_task(st)
+            pol = get_upload_policy()
+            oss_url = upload_to_oss(pol, audio, tid + ".audio")
+            st["stage"] = "提交识别任务"
+            save_task(st)
+            dash_tid = submit_asr(oss_url, st["options"].get("diarize", True))
+            st["dash_task_id"] = dash_tid
+            st["stage"] = "等待识别"
+            save_task(st)
+            turl = poll_asr(dash_tid, st)
+            st["stage"] = "整理结果"
+            save_task(st)
+            tj = requests.get(turl, timeout=120).json()
+            segments = build_segments(tj, with_spk)
+            result = {
+                "duration_ms": (tj.get("properties") or {}).get("original_duration_in_milliseconds"),
+                "segments": segments,
+                "text": "".join(s["text"] for s in segments),
+            }
         st["result"] = result
         if st["options"].get("dialect2mandarin"):
             try:
