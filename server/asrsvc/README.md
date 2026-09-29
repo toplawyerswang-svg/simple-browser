@@ -25,7 +25,7 @@
 - 附件视觉解析：GLM-4V-Flash（config.json `glm_vision_api_key`），
   PDF 经 pdftoppm 拆页上限 30 页，异步 worker 幂等补跑
 
-## 长音频分流 FunASR（2026-09-29 完成开发与双分支实测，待部署）
+## 长音频分流 FunASR（2026-09-29 已部署上线；>3h 说话人标签阈值校准中）
 
 - **规则**：单文件时长 > `config.json` 的 `asr_local_threshold_sec`（默认 10800 秒 = 3 小时）
   → 走 SER8 本地 FunASR（`funasr_url`，零成本）；其余照旧百炼 qwen。
@@ -42,8 +42,34 @@
 - **双分支实测**（ECS 测试实例 8721，生产未动）：
   A：1064s 样本（阈值600）→ FunASR 75s SUCCEEDED，116 段 2 说话人，无 dash_task_id；
   B：30s 片段（阈值99999）→ qwen 50s SUCCEEDED，有 dash_task_id，段格式一致。
-- **部署**：① `scp server/asrsvc/app.py → ECS:/opt/asrsvc/app.py`（先备份原文件）
-  ② ECS config.json 增 `"funasr_url": "http://100.100.19.0:8740"` ③ `systemctl restart asrsvc`
-  ④ grep 验证 funasr_transcribe 路由 + 走一单真实任务看 engine 字段
-  ⑤ 收尾：ECS 看门狗加 `funasr:8740:/healthz` 探针（服务起稳后再加）。
+- **部署状态（2026-09-29 12:44 已上线）**：①~⑤ 全部完成——app.py 已部署（备份
+  `/root/asrsvc-app-backup-20260929.py`）、config 已加 `funasr_url`（备份
+  `/root/asrsvc-config-backup-20260929.json`）、生产双分支真实验证通过（30s→qwen
+  正常带 dash 任务号；3.55h→FunASR 分流触发）、看门狗探针 `funasr:8740:/healthz`
+  已加（脚本备份 `/root/ser8-watchdog.sh.bak-20260929`）+ 手动跑一轮全绿。
+- **已知缺陷（修复进行中）**：>3h 文件的说话人标签——funasr 按批次聚类且标签逐批
+  累加偏移，3.55h 实测 v1 裂出 **417 个标签**（真值 2 人）；v3 质心归并（每标签取
+  句子 ERes2NetV2 嵌入的时长加权质心，质心层面阈值 0.45 归并）收敛到 **52 个**，
+  大幅改善但仍不可交付。句级全局聚类已被校准否决（同/异人嵌入相似度分布重叠，
+  ARI≤0.571）。SER8 上 `/opt/asrtest/calib_cent.py`（nohup）正在 3.55h 文件上扫描
+  质心归并阈值 0.45~0.75，结果落 `/opt/asrtest/calib_cent_result.json`——出阈值后
+  写入 funasr-svc config 的 `spk_centroid_dist` 并重启服务，再跑一轮生产验证收口。
 - **回滚**：备份的 app.py 覆盖回 + restart 即可；config 删掉 `funasr_url` 亦可单独关闭分流。
+
+## 部署状态（2026-09-29 已上线）
+
+- **已部署**：生产 asrsvc 已切 v3 分流版（备份 `/root/asrsvc-app-backup-20260929.py`；
+  config 加 `funasr_url`，阈值用默认 10800s）；生产真实任务双分支验证通过
+  （30s→qwen 正常有 dash_task_id；3.55h→FunASR 触发「超长音频转本地FunASR」阶段，
+  SUCCEEDED engine=funasr-local）；ECS 看门狗已加 `funasr:8740:/healthz` 探针（备份
+  `/root/ser8-watchdog.sh.bak-20260929`），手动跑一轮全绿。
+- **已知缺陷与修复轨迹（>3h 说话人标签）**：funasr 按批次聚类（batch_size_s=300），
+  标签逐批累加偏移——3.55h 实测 v1 裂出 **417 个标签**（真值 2 人）。v3 质心归并
+  （每标签取句子 ERes2NetV2 嵌入的时长加权质心，质心层面阈值 0.45 归并）→ **52 个**，
+  大幅收敛但仍不可交付。句级全局聚类不可行（校准：同/异人相似度分布重叠，ARI≤0.571）；
+  定长窗聚类不可行（对话窗几乎都含两人，嵌入为混合体，65/5 分裂）。
+- **进行中**：SER8 `/opt/asrtest/calib_cent.py`（nohup）在 3.55h 文件上扫质心归并阈值
+  0.45~0.75，结果落 `/opt/asrtest/calib_cent_result.json`——出阈值后写入
+  `/opt/funasr-svc/config.json` 的 `spk_centroid_dist` 并 `systemctl restart funasr`，
+  再跑一轮生产 3.55h 验证（预期 ≤4 个标签）后收口。注意循环测试文件是病态样本
+  （完全相同音频×12），真实长会议的表现需拿真实长录音再校一轮。
