@@ -24,10 +24,12 @@ class AsrProcessingService : Service() {
         AsrShareFlow.startForeground(this)
         val items = uris.zip(mimes) { u, m -> AsrShareFlow.MediaItem(Uri.parse(u), m) }
         val optsJson = intent?.getStringExtra(EXTRA_OPTS)
+        val appendTo = intent?.getStringExtra(EXTRA_WXCHAT_APPEND)
+        val appendTitle = intent?.getStringExtra(EXTRA_WXCHAT_APPEND_TITLE)
         Thread {
             try {
                 if (isWxChat) {
-                    WxChatShareFlow.runBatch(this, items)
+                    WxChatShareFlow.runBatch(this, items, appendTo, appendTitle)
                 } else {
                     val opts = AsrClient.Options.fromJson(optsJson ?: "{}")
                     AsrShareFlow.runBatch(this, items, opts)
@@ -45,6 +47,8 @@ class AsrProcessingService : Service() {
         private const val EXTRA_MIMES = "mimes"
         private const val EXTRA_OPTS = "opts"
         private const val EXTRA_WXCHAT = "wxchat"
+        private const val EXTRA_WXCHAT_APPEND = "wxchat_append"
+        private const val EXTRA_WXCHAT_APPEND_TITLE = "wxchat_append_title"
 
         /** 从处理选项页启动（用户点了「开始处理」，属前台启动，不受后台启动限制）。 */
         fun start(context: Context, items: List<AsrShareFlow.MediaItem>, opts: AsrClient.Options) {
@@ -55,12 +59,18 @@ class AsrProcessingService : Service() {
             context.startForegroundService(it)
         }
 
-        /** 微信聊天记录转存：令牌核验通过后直接启动，无选项页。 */
-        fun startWxChat(context: Context, items: List<AsrShareFlow.MediaItem>) {
+        /** 微信聊天记录转存：令牌核验通过后启动，无选项页。
+         *  appendTo 非空=追加进已有记录（appendTitle 为其展示名，供结果弹窗显示）。 */
+        fun startWxChat(context: Context, items: List<AsrShareFlow.MediaItem>,
+                        appendTo: String? = null, appendTitle: String? = null) {
             val it = Intent(context, AsrProcessingService::class.java)
                 .putStringArrayListExtra(EXTRA_URIS, ArrayList(items.map { it.uri.toString() }))
                 .putStringArrayListExtra(EXTRA_MIMES, ArrayList(items.map { it.mime }))
                 .putExtra(EXTRA_WXCHAT, true)
+            if (appendTo != null) {
+                it.putExtra(EXTRA_WXCHAT_APPEND, appendTo)
+                it.putExtra(EXTRA_WXCHAT_APPEND_TITLE, appendTitle ?: "")
+            }
             context.startForegroundService(it)
         }
     }

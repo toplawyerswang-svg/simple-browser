@@ -66,6 +66,19 @@
         android:contentDescription="@string/wxchat_item_copy" />
 
     <TextView
+        android:id="@+id/item_rename"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_marginStart="4dp"
+        android:minWidth="44dp"
+        android:minHeight="44dp"
+        android:gravity="center"
+        android:text="@string/wxchat_item_rename"
+        android:textSize="13sp"
+        android:textColor="#1565C0"
+        android:contentDescription="@string/wxchat_item_rename" />
+
+    <TextView
         android:id="@+id/item_open"
         android:layout_width="wrap_content"
         android:layout_height="wrap_content"

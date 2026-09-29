@@ -247,10 +247,19 @@ object AsrClient {
 
     /** 上传微信聊天记录 zip 建分享，onProgress 回调上传进度 0..100。 */
     fun uploadWxChat(context: Context, zip: File, displayName: String?,
-                     onProgress: (Int) -> Unit): WxChatShare {
+                     onProgress: (Int) -> Unit): WxChatShare =
+        postWxChatZip(context, "wxchat", zip, displayName, onProgress)
+
+    /** 向已有聊天记录分享追加 zip：服务端按时间归并消息，分享链接与提取码不变。 */
+    fun appendWxChat(context: Context, shareId: String, zip: File,
+                     onProgress: (Int) -> Unit): WxChatShare =
+        postWxChatZip(context, "wxchat/$shareId/append", zip, null, onProgress)
+
+    private fun postWxChatZip(context: Context, path: String, zip: File,
+                              displayName: String?, onProgress: (Int) -> Unit): WxChatShare {
         val token = token(context)
         val boundary = "lzbr" + System.currentTimeMillis()
-        val conn = (URL("$BASE_URL/wxchat").openConnection() as HttpURLConnection).apply {
+        val conn = (URL("$BASE_URL/$path").openConnection() as HttpURLConnection).apply {
             requestMethod = "POST"
             connectTimeout = 15000
             readTimeout = 600000
@@ -312,6 +321,24 @@ object AsrClient {
             expiresAt = j.optLong("expires_at", 0L),
             participants = participants
         )
+    }
+
+    /** 重命名聊天记录分享（分享页标题与 Agent JSON 的 title 同步生效）。 */
+    fun renameWxChatShare(context: Context, shareId: String, title: String) {
+        val conn = (URL("$BASE_URL/wxchat/$shareId/rename").openConnection() as HttpURLConnection).apply {
+            requestMethod = "POST"
+            connectTimeout = 15000
+            readTimeout = 20000
+            doOutput = true
+            setRequestProperty("X-LZ-Token", token(context))
+            setRequestProperty("Content-Type", "application/json")
+        }
+        conn.outputStream.use {
+            it.write(JSONObject().put("title", title).toString().toByteArray(Charsets.UTF_8))
+        }
+        val code = conn.responseCode
+        val body = readBody(conn, code)
+        checkCode(code, body)
     }
 
     /** 批量设置昵称→真名并刷新指定分享的显示名快照（转存后填名的保存通道）。

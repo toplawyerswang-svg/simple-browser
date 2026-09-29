@@ -1912,6 +1912,96 @@ def upload_wxchat():
                    participants=chat["participants"])
 
 
+@app.post("/api/asr/wxchat/<sid>/append")
+def append_wxchat(sid):
+    """向已有聊天记录分享追加一个 zip：消息按时间稳定归并，附件续编，链接与提取码不变。"""
+    user = authenticate()
+    if user is None:
+        return jsonify(error="unauthorized"), 401
+    sh = _wxchat_check(sid)
+    if sh is None or sh.get("owner") != user:
+        return jsonify(error="not found"), 404
+    f = request.files.get("file")
+    if f is None or not f.filename:
+        return jsonify(error="缺少 file 文件"), 400
+    tmp = DATA / (sid + ".wxzip.tmp")
+    f.save(tmp)
+    new_atts = []
+    try:
+        chat, others = wxchat_parse_zip(tmp, "")  # 标题沿用已有记录，不取 zip 名
+        new_atts = list(chat["attachments"])
+        fdir = DATA / (sid + ".wxfiles")
+        fdir.mkdir(exist_ok=True)
+        with zipfile.ZipFile(tmp) as zf:
+            base_to_info = {}
+            for info in zf.infolist():
+                if info.is_dir():
+                    continue
+                base = PurePosixPath(zip_entry_name(info).replace("\\", "/")).name
+                base_to_info.setdefault(base, info)
+            plan = []
+            for a in new_atts:
+                info = base_to_info.get(a["name"])
+                if info is not None:
+                    plan.append((a, info))
+            for base, info in others:
+                a = {"name": base, "size": info.file_size, "unreferenced": True}
+                new_atts.append(a)
+                plan.append((a, info))
+            base_idx = len(sh["attachments"])  # 文件名序号接在已有附件之后，不会相撞
+            for off, (a, info) in enumerate(plan):
+                safe = "f%d_%s" % (base_idx + off, _wx_safe_name(a["name"]))
+                with zf.open(info) as fin, open(fdir / safe, "wb") as fout:
+                    shutil.copyfileobj(fin, fout)
+                a["path"] = safe
+        # 消息里的附件下标平移到追加后的位置
+        for m in chat["messages"]:
+            if "att" in m:
+                m["att"] += base_idx
+    except zipfile.BadZipFile:
+        tmp.unlink(missing_ok=True)
+        return jsonify(error="不是有效的 zip 文件"), 400
+    except ValueError as e:
+        tmp.unlink(missing_ok=True)
+        return jsonify(error=str(e)), 400
+    finally:
+        tmp.unlink(missing_ok=True)
+    old_chat = sh["chat"]
+    old_n = len(old_chat["messages"])
+    # 稳定排序：同分钟消息保持两段各自原有的相对次序
+    merged = old_chat["messages"] + chat["messages"]
+    merged.sort(key=lambda m: m.get("time") or "")
+    times = [m["time"] for m in merged if m.get("time")]
+    old_chat["messages"] = merged
+    old_chat["message_count"] = len(merged)
+    old_chat["time_start"] = times[0] if times else None
+    old_chat["time_end"] = times[-1] if times else None
+    for p in chat["participants"]:
+        if p not in old_chat["participants"]:
+            old_chat["participants"].append(p)
+    names = load_wxnames(user)
+    display = old_chat.get("name_display")
+    if not isinstance(display, dict):
+        display = {n: names.get(n, n) for n in old_chat["participants"]}
+    for p in old_chat["participants"]:
+        if p not in display:
+            display[p] = names.get(p, p)
+    old_chat["name_display"] = display
+    sh["attachments"] = (sh.get("attachments") or []) + new_atts
+    # 追加说明记录仍在使用：有效期从本次起重新计 30 天（链接与提取码不变）
+    sh["expires_at"] = time.time() + WXCHAT_HOURS * 3600
+    save_share(sh)
+    added = len(merged) - old_n
+    print("wxchat appended by", user, ":", sid, "+%d msgs" % added,
+          "+%d attachments" % len(new_atts), flush=True)
+    wxchat_kick_ocr(sid)
+    return jsonify(share_id=sid, pwd=sh["pwd"], appended=True, added_messages=added,
+                   message_count=len(merged),
+                   url="%s/%s?pwd=%s" % (SHARE_BASE, sid, sh["pwd"]),
+                   validity_hours=WXCHAT_HOURS, expires_at=sh["expires_at"],
+                   participants=old_chat["participants"])
+
+
 def _wxchat_check(sid):
     """sid/分享/类型校验，返回 share 或 None。"""
     if not re.fullmatch(r"[0-9a-f]{6,32}", sid):
@@ -2007,6 +2097,26 @@ def wxchat_delete(sid):
     shutil.rmtree(DATA / (sid + ".wxfiles"), ignore_errors=True)
     print("wxchat share deleted by", user, ":", sid, flush=True)
     return jsonify(deleted=True)
+
+
+@app.post("/api/asr/wxchat/<sid>/rename")
+def wxchat_rename(sid):
+    """重命名我的聊天记录分享：分享页标题与 Agent JSON 的 title 同步生效。"""
+    user = authenticate()
+    if user is None:
+        return jsonify(error="unauthorized"), 401
+    sh = _wxchat_check(sid)
+    if sh is None or sh.get("owner") != user:
+        return jsonify(error="not found"), 404
+    j = request.get_json(silent=True) or {}
+    title = str(j.get("title") or "").strip()[:200]
+    if not title:
+        return jsonify(error="标题不能为空"), 400
+    sh["filename"] = title
+    sh["chat"]["title"] = title
+    save_share(sh)
+    print("wxchat renamed by", user, ":", sid, "->", title, flush=True)
+    return jsonify(renamed=True, title=title)
 
 
 @app.get("/s/<sid>/chat.json")

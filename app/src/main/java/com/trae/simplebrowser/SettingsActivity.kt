@@ -592,6 +592,7 @@ class SettingsActivity : AppCompatActivity() {
                     else -> ocrView.visibility = View.GONE
                 }
                 v.findViewById<TextView>(R.id.item_copy).setOnClickListener { copyWxLink(item) }
+                v.findViewById<TextView>(R.id.item_rename).setOnClickListener { promptRenameWxShare(item) }
                 v.findViewById<TextView>(R.id.item_open).setOnClickListener { openWxShare(item) }
                 return v
             }
@@ -772,6 +773,40 @@ class SettingsActivity : AppCompatActivity() {
         cm.setPrimaryClip(android.content.ClipData.newPlainText("share",
             getString(R.string.wxchat_share_text, item.title, item.url)))
         Toast.makeText(this, R.string.asr_share_copied, Toast.LENGTH_SHORT).show()
+    }
+
+    /** 重命名记录：分享页标题与 Agent JSON 的 title 服务端同步生效。 */
+    private fun promptRenameWxShare(item: WxShareItem) {
+        val input = EditText(this).apply {
+            setText(item.title)
+            setSingleLine(true)
+        }
+        AlertDialog.Builder(this)
+            .setTitle(R.string.wxchat_rename_title)
+            .setView(input)
+            .setNegativeButton(android.R.string.cancel, null)
+            .setPositiveButton(android.R.string.ok) { _, _ ->
+                val t = input.text.toString().trim()
+                if (t.isEmpty() || t == item.title) return@setPositiveButton
+                Thread {
+                    try {
+                        AsrClient.renameWxChatShare(this, item.shareId, t)
+                        runOnUiThread {
+                            if (isFinishing || isDestroyed) return@runOnUiThread
+                            Toast.makeText(this, R.string.wxchat_rename_saved,
+                                Toast.LENGTH_SHORT).show()
+                            loadWxShares()
+                        }
+                    } catch (e: Exception) {
+                        runOnUiThread {
+                            if (!isFinishing && !isDestroyed) {
+                                Toast.makeText(this, asrErrorText(e), Toast.LENGTH_LONG).show()
+                            }
+                        }
+                    }
+                }.start()
+            }
+            .show()
     }
 
     // ---------- 分享页内预览：BACK 关闭必回列表，不依赖任务栈 ----------
