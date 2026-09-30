@@ -291,14 +291,18 @@ object AsrClient {
                     }
                 }
             }
-            text("\r\n--$boundary\r\n")
-            if (!displayName.isNullOrBlank()) {
+            text("\r\n")
+            // display_name 省略时不能再输出「\r\n--boundary\r\n」再接终止符——
+            // 悬空的边界行会开出一个空 part，werkzeug 判多 part 非法返回 400（追加失败根因）
+            if (displayName.isNullOrBlank()) {
+                text("--$boundary--\r\n")
+            } else {
+                text("--$boundary\r\n")
                 text("Content-Disposition: form-data; name=\"display_name\"\r\n")
                 text("Content-Type: text/plain; charset=utf-8\r\n\r\n")
                 text(displayName.trim().replace(Regex("[\\p{Cntrl}]"), "").take(200))
-                text("\r\n")
+                text("\r\n--$boundary--\r\n")
             }
-            text("--$boundary--\r\n")
         }
         val code = conn.responseCode
         val body = readBody(conn, code)

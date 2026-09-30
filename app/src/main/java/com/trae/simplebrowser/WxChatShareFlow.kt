@@ -12,8 +12,10 @@ import android.os.Build
 import android.util.Log
 import android.view.View
 import android.graphics.Typeface
+import android.widget.ArrayAdapter
 import android.widget.EditText
 import android.widget.LinearLayout
+import android.widget.ListView
 import android.widget.ScrollView
 import android.widget.TextView
 import android.widget.Toast
@@ -93,28 +95,73 @@ object WxChatShareFlow {
         return out
     }
 
-    /** 追加选择框：点列表项=追加进该记录（按时间归并、链接不变）；「新建记录」=照旧单独建份。 */
+    /** 追加选择框：点列表项=追加进该记录（按时间归并、链接不变）；「新建记录」=照旧单独建份。
+     *  不用 setMessage+setItems 组合——appcompat 1.7.0 该布局下列表会被消息面板吞掉不渲染，
+     *  改为自定义 view（消息文本 + 筛选框 + ListView），与真名填写弹窗同套路。
+     *  记录多时可在筛选框输关键词（匹配标题/条数/日期）快速定位目标记录。 */
     private fun showAppendChooser(activity: MainActivity, items: List<AsrShareFlow.MediaItem>,
                                   shares: List<WxShareRef>) {
+        val dm = activity.resources.displayMetrics
+        fun dp(v: Int) = (v * dm.density).toInt()
         val fmt = SimpleDateFormat("M月d日", Locale.CHINA)
         val labels = shares.map { s ->
             activity.getString(R.string.wxchat_append_item, s.title, s.messageCount,
                 fmt.format(Date(s.createdAt * 1000)))
         }
-        AlertDialog.Builder(activity)
+        fun listHeight(n: Int) = (n * dp(48)).coerceAtLeast(dp(48))
+            .coerceAtMost(dm.heightPixels * 45 / 100)
+        val box = LinearLayout(activity).apply { orientation = LinearLayout.VERTICAL }
+        box.addView(TextView(activity).apply {
+            text = activity.getString(R.string.wxchat_append_msg, shares.size)
+            textSize = 15f
+            setTextColor(0xFF333333.toInt())
+            setPadding(dp(24), dp(10), dp(24), dp(4))
+        })
+        val filter = EditText(activity).apply {
+            hint = activity.getString(R.string.wxchat_append_filter_hint)
+            setSingleLine(true)
+        }
+        box.addView(filter)
+        val list = ListView(activity)
+        val adapter = ArrayAdapter(activity, android.R.layout.simple_list_item_1, ArrayList<String>())
+        list.adapter = adapter
+        box.addView(list, LinearLayout.LayoutParams(
+            LinearLayout.LayoutParams.MATCH_PARENT, listHeight(shares.size)))
+        val dialog = AlertDialog.Builder(activity)
             .setTitle(R.string.wxchat_append_title)
-            .setMessage(activity.getString(R.string.wxchat_append_msg, shares.size))
-            .setItems(labels.toTypedArray()) { _, which ->
-                val s = shares[which]
-                startTransfer(activity, items, s.shareId, s.title)
-            }
+            .setView(box)
             .setPositiveButton(R.string.wxchat_append_new) { _, _ ->
                 startTransfer(activity, items, null, null)
             }
             .setNegativeButton(R.string.wxchat_append_cancel) { _, _ ->
                 Toast.makeText(activity, R.string.wxchat_append_aborted, Toast.LENGTH_SHORT).show()
             }
-            .show()
+            .create()
+        var visibleShares: List<WxShareRef> = shares
+        fun applyFilter(kwRaw: String) {
+            val kw = kwRaw.trim()
+            val idx = if (kw.isEmpty()) shares.indices.toList()
+            else shares.indices.filter { labels[it].contains(kw, ignoreCase = true) }
+            visibleShares = idx.map { shares[it] }
+            adapter.clear()
+            idx.forEach { adapter.add(labels[it]) }
+            (list.layoutParams as LinearLayout.LayoutParams).let {
+                it.height = listHeight(visibleShares.size)
+                list.layoutParams = it
+            }
+        }
+        applyFilter("")
+        filter.addTextChangedListener(object : android.text.TextWatcher {
+            override fun afterTextChanged(s: android.text.Editable?) = applyFilter(s?.toString() ?: "")
+            override fun beforeTextChanged(s: CharSequence?, a: Int, b: Int, c: Int) {}
+            override fun onTextChanged(s: CharSequence?, a: Int, b: Int, c: Int) {}
+        })
+        list.setOnItemClickListener { _, _, which, _ ->
+            dialog.dismiss()
+            val s = visibleShares[which]
+            startTransfer(activity, items, s.shareId, s.title)
+        }
+        dialog.show()
     }
 
     /** 服务线程入口：逐个上传（微信一次只分享一个聊天记录包，多包按队列推进）。

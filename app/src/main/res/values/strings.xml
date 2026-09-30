@@ -66,6 +66,7 @@
     <string name="wxchat_append_new">新建记录</string>
     <string name="wxchat_append_cancel">取消</string>
     <string name="wxchat_append_aborted">已取消本次转存</string>
+    <string name="wxchat_append_filter_hint">输入关键词筛选记录（标题/日期）</string>
     <string name="wxchat_name_title_label">记录名称（可修改）</string>
     <string name="wxchat_expire_fallback">30 天后</string>
     <string name="wxchat_share_text">【聊天记录】%1$s\n%2$s</string>
