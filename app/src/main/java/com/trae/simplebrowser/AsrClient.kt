@@ -235,14 +235,17 @@ object AsrClient {
     }
 
     /** 微信聊天记录转存分享：服务端解析 zip 后直接返回分享链接（30 天有效）。
-     *  participants 为记录中出现的微信昵称（转存后弹真名填写框用）。 */
+     *  participants 为记录中出现的微信昵称（转存后弹真名填写框用）。
+     *  addedMessages/skippedDuplicates 仅追加时有意义：本次新增条数与判重跳过条数。 */
     data class WxChatShare(
         val shareId: String,
         val pwd: String,
         val url: String,
         val validityHours: Int,
         val expiresAt: Long,
-        val participants: List<String>
+        val participants: List<String>,
+        val addedMessages: Int = -1,
+        val skippedDuplicates: Int = 0
     )
 
     /** 上传微信聊天记录 zip 建分享，onProgress 回调上传进度 0..100。 */
@@ -323,7 +326,9 @@ object AsrClient {
             url = j.getString("url"),
             validityHours = j.optInt("validity_hours", 720),
             expiresAt = j.optLong("expires_at", 0L),
-            participants = participants
+            participants = participants,
+            addedMessages = j.optInt("added_messages", -1),
+            skippedDuplicates = j.optInt("skipped_duplicates", 0)
         )
     }
 

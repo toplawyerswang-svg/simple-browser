@@ -1843,6 +1843,16 @@ def _wx_safe_name(name):
     return re.sub(r'[\\/:*?"<>|]', "_", name)[:180]
 
 
+def _wx_file_sha1(path):
+    """附件字节指纹：图片/视频追加判重用。微信每次导出的媒体文件序号名会变，不能按文件名比对。"""
+    import hashlib
+    h = hashlib.sha1()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(1024 * 256), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
 @app.post("/api/asr/wxchat")
 def upload_wxchat():
     """上传微信聊天记录 zip：解析→存附件→建 30 天分享，同步返回分享链接。"""
@@ -1914,7 +1924,9 @@ def upload_wxchat():
 
 @app.post("/api/asr/wxchat/<sid>/append")
 def append_wxchat(sid):
-    """向已有聊天记录分享追加一个 zip：消息按时间稳定归并，附件续编，链接与提取码不变。"""
+    """向已有聊天记录分享追加一个 zip：消息按时间稳定归并，附件续编，链接与提取码不变。
+    自动去重：文本/文件类消息按 发送者+时间+内容 判重（重叠转存的同句话不再重复入库）；
+    图片/视频文本均为[图片]标记，须同分钟且附件字节指纹(SHA-1)一致才判重，防止误删同分钟的不同图。"""
     user = authenticate()
     if user is None:
         return jsonify(error="unauthorized"), 401
@@ -1954,10 +1966,6 @@ def append_wxchat(sid):
                 with zf.open(info) as fin, open(fdir / safe, "wb") as fout:
                     shutil.copyfileobj(fin, fout)
                 a["path"] = safe
-        # 消息里的附件下标平移到追加后的位置
-        for m in chat["messages"]:
-            if "att" in m:
-                m["att"] += base_idx
     except zipfile.BadZipFile:
         tmp.unlink(missing_ok=True)
         return jsonify(error="不是有效的 zip 文件"), 400
@@ -1968,8 +1976,55 @@ def append_wxchat(sid):
         tmp.unlink(missing_ok=True)
     old_chat = sh["chat"]
     old_n = len(old_chat["messages"])
+    fdir = DATA / (sid + ".wxfiles")
+
+    # ---- 追加去重：与旧记录重叠的消息不再重复入库 ----
+    old_text_keys = {(m.get("sender"), m.get("time"), m.get("text"))
+                     for m in old_chat["messages"]
+                     if m.get("type") not in ("image", "video")}
+    old_av_hashes = {}
+    for m in old_chat["messages"]:
+        if m.get("type") not in ("image", "video"):
+            continue
+        h = None
+        atts = sh["attachments"]
+        if "att" in m and m["att"] < len(atts) and "path" in atts[m["att"]]:
+            p = fdir / atts[m["att"]]["path"]
+            if p.exists():
+                h = _wx_file_sha1(p)
+                atts[m["att"]].setdefault("sha1", h)  # 缓存指纹，下次追加直接复用
+        old_av_hashes.setdefault((m.get("sender"), m.get("time")), set()).add(h)
+    kept, skipped = [], 0
+    for m in chat["messages"]:
+        if m.get("type") in ("image", "video"):
+            h = None
+            if "att" in m and m["att"] < len(new_atts) and "path" in new_atts[m["att"]]:
+                p = fdir / new_atts[m["att"]]["path"]
+                if p.exists():
+                    h = _wx_file_sha1(p)
+            if h is not None and h in old_av_hashes.get((m.get("sender"), m.get("time")), set()):
+                skipped += 1
+                continue
+        elif (m.get("sender"), m.get("time"), m.get("text")) in old_text_keys:
+            skipped += 1
+            continue
+        kept.append(m)
+    # 判重后不再被引用的附件不入库，已落盘的孤儿文件一并删除（未引用媒体照旧保留展示）
+    # 此处消息 att 仍是本次 zip 内的局部下标（0..len(new_atts)-1），去重完再平移到全局
+    used = {m["att"] for m in kept if "att" in m}
+    final_atts, remap = [], {}
+    for i, a in enumerate(new_atts):
+        if a.get("unreferenced") or i in used:
+            remap[i] = base_idx + len(final_atts)
+            final_atts.append(a)
+        elif "path" in a:
+            (fdir / a["path"]).unlink(missing_ok=True)
+    for m in kept:
+        if "att" in m:
+            m["att"] = remap[m["att"]]
+
     # 稳定排序：同分钟消息保持两段各自原有的相对次序
-    merged = old_chat["messages"] + chat["messages"]
+    merged = old_chat["messages"] + kept
     merged.sort(key=lambda m: m.get("time") or "")
     times = [m["time"] for m in merged if m.get("time")]
     old_chat["messages"] = merged
@@ -1987,16 +2042,16 @@ def append_wxchat(sid):
         if p not in display:
             display[p] = names.get(p, p)
     old_chat["name_display"] = display
-    sh["attachments"] = (sh.get("attachments") or []) + new_atts
+    sh["attachments"] = (sh.get("attachments") or []) + final_atts
     # 追加说明记录仍在使用：有效期从本次起重新计 30 天（链接与提取码不变）
     sh["expires_at"] = time.time() + WXCHAT_HOURS * 3600
     save_share(sh)
-    added = len(merged) - old_n
+    added = len(kept)
     print("wxchat appended by", user, ":", sid, "+%d msgs" % added,
-          "+%d attachments" % len(new_atts), flush=True)
+          "-%d dups" % skipped, "+%d attachments" % len(final_atts), flush=True)
     wxchat_kick_ocr(sid)
     return jsonify(share_id=sid, pwd=sh["pwd"], appended=True, added_messages=added,
-                   message_count=len(merged),
+                   skipped_duplicates=skipped, message_count=len(merged),
                    url="%s/%s?pwd=%s" % (SHARE_BASE, sid, sh["pwd"]),
                    validity_hours=WXCHAT_HOURS, expires_at=sh["expires_at"],
                    participants=old_chat["participants"])

@@ -41,11 +41,13 @@ object WxChatShareFlow {
 
     /** 一次成功的转存：displayName 是记录标题（新建=zip 名可改，追加=目标记录名），
      *  url 已含提取码；shareId/participants 用于转存后的真名填写（保存需刷新该份快照）。
-     *  appended=true 表示本次是追加进已有记录（链接不变，结果文案区分）。 */
+     *  appended=true 表示本次是追加进已有记录（链接不变，结果文案区分）；
+     *  addedCount/skippedDups 为追加的新增条数与去重条数（新建时为 -1/0）。 */
     data class Success(val displayName: String, val url: String, val pwd: String,
                        val expiresAt: Long, val shareId: String,
                        val participants: List<String>,
-                       val appended: Boolean = false)
+                       val appended: Boolean = false,
+                       val addedCount: Int = -1, val skippedDups: Int = 0)
 
     /** 追加选择框用的已有记录摘要（服务端已按创建时间倒序）。 */
     private data class WxShareRef(val shareId: String, val title: String,
@@ -211,7 +213,8 @@ object WxChatShareFlow {
             Log.i(TAG, "wxchat share created: ${share.shareId} appended=${appendTo != null}")
             // 追加时展示目标记录名；新建时展示 zip 名（真名弹窗里可改名）
             return Success(appendTitle ?: displayName, share.url, share.pwd, share.expiresAt,
-                share.shareId, share.participants, appended = appendTo != null)
+                share.shareId, share.participants, appended = appendTo != null,
+                addedCount = share.addedMessages, skippedDups = share.skippedDuplicates)
         } finally {
             local.delete()
         }
@@ -399,7 +402,7 @@ object WxChatShareFlow {
                 val expire = if (s.expiresAt > 0) fmt.format(Date(s.expiresAt * 1000))
                 else activity.getString(R.string.wxchat_expire_fallback)
                 if (s.appended) activity.getString(R.string.wxchat_result_appended_item,
-                    s.displayName, s.url, expire)
+                    s.displayName, s.addedCount.coerceAtLeast(0), s.skippedDups, s.url, expire)
                 else activity.getString(R.string.wxchat_result_item, s.displayName, s.url, expire)
             }
             val firstUrl = results.first().url

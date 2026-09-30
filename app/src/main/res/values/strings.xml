@@ -59,7 +59,7 @@
     <string name="wxchat_result_title">聊天记录已转存</string>
     <string name="wxchat_result_appended_title">聊天记录已追加</string>
     <string name="wxchat_result_item">%1$s\n%2$s\n有效期至 %3$s（链接已含提取码，AI 助手可读取解析结果）</string>
-    <string name="wxchat_result_appended_item">已追加到「%1$s」（消息按时间归并，链接与提取码不变）\n%2$s\n有效期至 %3$s（自本次起重新计 30 天）</string>
+    <string name="wxchat_result_appended_item">已追加到「%1$s」，新增 %2$d 条、去重 %3$d 条（消息按时间归并，链接与提取码不变）\n%4$s\n有效期至 %5$s（自本次起重新计 30 天）</string>
     <string name="wxchat_append_title">保存微信聊天记录</string>
     <string name="wxchat_append_msg">已有 %1$d 份记录。点一份可把本次聊天记录追加进去（按时间归并、链接不变），或新建一份。</string>
     <string name="wxchat_append_item">%1$s（%2$d 条消息 · %3$s 转存）</string>

@@ -193,6 +193,72 @@ def main():
     r = c.get("/s/%s/chat.json?pwd=WRONGWRONGWRONGWRONG" % sid)
     check(r.status_code == 403, "错误提取码 403")
 
+    # 11) 追加去重：文本消息重叠段不重复入库
+    zip3 = wx_zip([("聊天记录/聊天记录.txt", chat_txt([
+        ("2024年5月1日", "张三", "10:00", ("早上好，合同发你了",)),   # 与旧记录完全相同 → 判重
+        ("2024年5月4日", "李四", "09:00", ("新消息才入库",)),         # 新消息
+    ]))])
+    r = c.post("/api/asr/wxchat/%s/append" % sid, data={"file": (io.BytesIO(zip3), "z3.zip")},
+               headers={"X-LZ-Token": TOKEN}, content_type="multipart/form-data")
+    jd = r.get_json()
+    check(r.status_code == 200 and jd["added_messages"] == 1 and jd["skipped_duplicates"] == 1,
+          "文本判重：+1 去 1", jd)
+    check(jd["message_count"] == 9, "去重后消息数=9", jd["message_count"])
+    r = c.get("/s/%s/chat.json?pwd=%s" % (sid, pwd))
+    cj2 = r.get_json()
+    texts = [m["text"] for m in cj2["messages"]]
+    check(texts.count("早上好，合同发你了") == 1, "重复句全文只剩一条", texts[:4])
+
+    # 12) 文件消息重传判重：消息跳过且孤儿附件不落库
+    zip4 = wx_zip([
+        ("聊天记录/聊天记录.txt", chat_txt([
+            ("2024年5月1日", "李四", "10:05", ("[文件]合同.pdf",)),   # 重复
+        ])),
+        ("聊天记录/文件/合同.pdf", doc1),
+    ])
+    r = c.post("/api/asr/wxchat/%s/append" % sid, data={"file": (io.BytesIO(zip4), "z4.zip")},
+               headers={"X-LZ-Token": TOKEN}, content_type="multipart/form-data")
+    jd = r.get_json()
+    check(r.status_code == 200 and jd["added_messages"] == 0 and jd["skipped_duplicates"] == 1,
+          "文件消息判重：+0 去 1", jd)
+    check(jd["message_count"] == 9, "消息数仍=9", jd["message_count"])
+
+    # 13) 同分钟不同图不误删：两条新[图片]字节均不同 → 全部保留
+    imgA, imgB = b"\x89PNG\r\n\x1a\nfake-img-A", b"\x89PNG\r\n\x1a\nfake-img-B"
+    zip5 = wx_zip([
+        ("聊天记录/media/img_1.jpg", imgA),
+        ("聊天记录/media/img_2.jpg", imgB),
+        ("聊天记录/聊天记录.txt", chat_txt([
+            ("2024年5月1日", "张三", "10:06", ("[图片]",)),
+            (None, "张三", "10:06", ("[图片]",)),
+        ])),
+    ])
+    r = c.post("/api/asr/wxchat/%s/append" % sid, data={"file": (io.BytesIO(zip5), "z5.zip")},
+               headers={"X-LZ-Token": TOKEN}, content_type="multipart/form-data")
+    jd = r.get_json()
+    check(r.status_code == 200 and jd["added_messages"] == 2 and jd["skipped_duplicates"] == 0,
+          "同分钟不同图：2 条全保留", jd)
+    check(jd["message_count"] == 11, "消息数=11", jd["message_count"])
+
+    # 14) 同图重传判重：字节指纹一致 → 跳过且孤儿附件清理
+    zip6 = wx_zip([
+        ("聊天记录/media/img_1.jpg", b"\x89PNG\r\n\x1a\nfake-img-1"),   # 与旧记录同字节
+        ("聊天记录/聊天记录.txt", chat_txt([
+            ("2024年5月1日", "张三", "10:06", ("[图片]",)),
+        ])),
+    ])
+    r = c.post("/api/asr/wxchat/%s/append" % sid, data={"file": (io.BytesIO(zip6), "z6.zip")},
+               headers={"X-LZ-Token": TOKEN}, content_type="multipart/form-data")
+    jd = r.get_json()
+    check(r.status_code == 200 and jd["added_messages"] == 0 and jd["skipped_duplicates"] == 1,
+          "同图重传：判重跳过", jd)
+    check(jd["message_count"] == 11, "消息数仍=11", jd["message_count"])
+    r = c.get("/api/asr/wxchat/list", headers={"X-LZ-Token": TOKEN})
+    it = next(x for x in r.get_json()["shares"] if x["share_id"] == sid)
+    check(it["attachment_count"] == 5, "附件数=5（孤儿未入库）", it["attachment_count"])
+    leftovers = list((root / "data").glob("%s.wxfiles/f[5-9]_*" % sid))
+    check(not leftovers, "判重附件孤儿文件已删", [p.name for p in leftovers])
+
     shutil.rmtree(root, ignore_errors=True)
     print()
     if fails:
