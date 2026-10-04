@@ -413,3 +413,19 @@
 | 关联代码 | activity_settings.xml（三页面 FrameLayout 结构）、SettingsActivity.setupTabs（三标签+页面可见性切换）、strings（settings_tab_other、asr_manage_title 更名）                        |
 | 真机验证 | 三标签渲染 ✓；其他设置 ↔ 音视频识别 切换正常 ✓；音视频识别页身份/列表正常 ✓；下载管理回归 ✓                                                                                              |
 
+
+### F-32 12368 短信自动备份到 SER8（短信备份页签）
+
+| 项目    | 内容                                                                                                                                                                                                                                                                  |
+| ----- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 入口    | 设置 → 短信备份页签：自动备份开关、①短信权限、②上传令牌、上传地址（高级）、回扫手机已有 12368 短信、待上存状态 + 立即上存按钮                                                                                                                                                                                              |
+| 权限    | 新增 READ_SMS（回扫收件箱）+ RECEIVE_SMS（实时监听）运行时权限，页签内点按申请；拒绝后提示到系统设置手动开启                                                                                                                                                                                                    |
+| 实时监听 | SmsReceiver 静态注册 SMS_RECEIVED（android:permission=BROADCAST_SMS 仅系统可投递），长短信多段 PDU 按发件号分组合并，仅发件号归一后等于 12368 的短信入队并触发异步上存；总开关关闭时不动作                                                                                                                                                 |
+| 离线队列  | 上存失败的短信进本机 SQLite 队列（sms_backup.db pending 表），永不丢弃；打开 APP / 打开设置页 / 收到新短信时自动补传；上存成功记录 sent 表（按服务地址隔离，换地址或重装不污染判重）                                                                                                                                                   |
+| 历史回扫 | 「回扫」读取收件箱全部 12368 短信，跳过本机已传记录分批（100 条/批）上存；服务端另按 sha1(发件号\|时间\|正文) 唯一索引幂等判重，重复上存无害；结果摘要持久化展示（手机共 N 条 / 新上存 M / 判重 K）                                                                                                                                                 |
+| 服务端   | SER8 smsbox（server/smsbox/smsbox.py，纯标准库）：/ingest 批量落库、/ping 核验+计数、/list 查询、/ 网页查看页、/healthz 探针；公网入口 api.orientlaw.cn/api/sms/（ECS nginx 反代 tailnet→SER8:8730，UFW 限办公内网+tailnet）；**服务端与公网入口本批未部署**（部署清单见 server/smsbox/README.md）                                       |
+| 关联代码 | core/SmsBackupLogic.kt（匹配/指纹/报文纯逻辑）、SmsBackupStore.kt（pending/sent 双表队列）、SmsBackupManager.kt（上传/回扫/冲刷/令牌核验）、SmsReceiver.kt、SettingsActivity.setupSmsBackup、AppPrefs（sms_* 键）、AndroidManifest（权限+receiver）、server/smsbox/                                                   |
+| 单元测试 | SmsBackupLogicTest 9 例（号码匹配含 +8612368/123x68 负例、指纹与服务端同构对齐、报文往返）OK；既有纯函数回归 126 例全过 OK                                                                                                                                                                                |
+| 模拟器验证 | UI 全流程：权限申请弹窗→已授予 ✓；上传地址改指本地 smsbox（adb reverse）✓；令牌输入→/ping 核验通过显示服务器计数 ✓；开关开启 ✓；回扫确认框→结果摘要展示 ✓；仪器测试 SmsBackupPipelineTest（入队→冲刷→HTTP→落库→sent 记账）OK、SmsReceiverPduTest（手工构造真实 SMS-DELIVER PDU→receiver→上传→服务器终态断言）OK；清理后冒烟状态干净 ✓                                      |
+| 真机验证 | 华为 FCP-AN10 本批开发期间未连接 adb，**装机与真机冒烟待补**（install -r 覆盖装、真机权限弹窗、真实 12368 短信到达观察实时链路）；手机里真实历史短信回扫须待服务端部署后在真机执行，避免测试数据混入正式库                                                                                                                                              |
+| 已知边界 | 实时接收依赖系统广播派发（静态注册，重启后仍有效）；部分 ROM 强杀后台不影响 manifest 接收器；鸿蒙对通知权限的限制与本功能无关（静默上存无通知）                                                                                                                                                                                       |

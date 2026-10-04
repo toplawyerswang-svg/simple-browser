@@ -369,4 +369,37 @@
     <string name="http_auth_password_hint">密码</string>
     <string name="http_auth_remember">记住密码</string>
     <string name="http_auth_login">登录</string>
+    <!-- 12368 短信自动备份（F-32） -->
+    <string name="settings_tab_sms">短信备份</string>
+    <string name="sms_section_title">12368 短信自动备份</string>
+    <string name="sms_hint">法院短信（发件号 12368）会自动备份到研究所服务器，开庭通知、送达信息再也不会丢。需要短信权限；断网时先存在手机里，恢复后自动补传。</string>
+    <string name="sms_switch">自动备份 12368 短信</string>
+    <string name="sms_perm_row">① 短信权限</string>
+    <string name="sms_perm_granted">已授予</string>
+    <string name="sms_perm_missing">未授予，点这里申请</string>
+    <string name="sms_perm_denied_hint">权限被拒绝。可到系统「设置 → 应用 → 轻舟浏览器 → 权限」中手动开启短信权限。</string>
+    <string name="sms_token_row">② 上传令牌</string>
+    <string name="sms_token_set">已设置（点这里修改）</string>
+    <string name="sms_token_unset">未设置，点这里输入</string>
+    <string name="sms_token_dialog_title">上传令牌</string>
+    <string name="sms_token_dialog_hint">输入短信备份服务的上传令牌（由管理员提供）</string>
+    <string name="sms_token_verify_ok">令牌核验通过，服务器已有 %1$d 条</string>
+    <string name="sms_base_row">上传地址（高级）</string>
+    <string name="sms_base_dialog_title">上传地址</string>
+    <string name="sms_base_dialog_hint">https://api.orientlaw.cn/api/sms</string>
+    <string name="sms_base_reset_toast">已恢复默认上传地址</string>
+    <string name="sms_backfill_row">回扫手机里已有的 12368 短信</string>
+    <string name="sms_backfill_confirm">将读取手机里全部 12368 短信并上存（已传过的自动跳过），开始吗？</string>
+    <string name="sms_backfill_running">回扫中…</string>
+    <string name="sms_backfill_done_fmt">上次回扫：手机共 %1$d 条 12368 短信，新上存 %2$d 条，服务器判重 %3$d 条</string>
+    <string name="sms_backfill_need_perm">需要先授予短信权限</string>
+    <string name="sms_backfill_need_token">需要先设置上传令牌</string>
+    <string name="sms_flush_btn">立即上存</string>
+    <string name="sms_queue_fmt">待上存 %1$d 条 · 服务器已有 %2$d 条</string>
+    <string name="sms_queue_unknown_server">待上存 %1$d 条 · 服务器未核验</string>
+    <string name="sms_flush_done">队列上存完成</string>
+    <string name="sms_flush_result_fmt">队列上存完成：%1$s</string>
+    <string name="sms_enabled_need_perm">请先授予短信权限</string>
+    <string name="sms_toast_error_fmt">失败：%1$s</string>
+    <string name="sms_server_count_fmt">服务器已有 %1$d 条</string>
 </resources>

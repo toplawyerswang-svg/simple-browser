@@ -1,6 +1,7 @@
 package com.trae.simplebrowser
 
 import android.annotation.SuppressLint
+import android.Manifest
 import android.app.DownloadManager
 import android.content.BroadcastReceiver
 import android.content.Context
@@ -30,6 +31,7 @@ import android.widget.TextView
 import android.widget.Toast
 import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.core.content.ContextCompat
 import com.google.android.material.tabs.TabLayout
 import org.json.JSONObject
@@ -37,6 +39,7 @@ import com.trae.simplebrowser.core.AdBlockEngine
 import com.trae.simplebrowser.core.DownloadKind
 import com.trae.simplebrowser.core.DownloadRecord
 import com.trae.simplebrowser.core.DownloadStatus
+import com.trae.simplebrowser.core.SmsBackupLogic
 import com.trae.simplebrowser.databinding.ActivitySettingsBinding
 import java.io.File
 import java.text.SimpleDateFormat
@@ -130,6 +133,7 @@ class SettingsActivity : AppCompatActivity() {
         setupAsrManage()
         setupWxChatManage()
         setupDownloadManage()
+        setupSmsBackup()
 
         val versionName = runCatching {
             packageManager.getPackageInfo(packageName, 0).versionName
@@ -142,6 +146,7 @@ class SettingsActivity : AppCompatActivity() {
     override fun onResume() {
         super.onResume()
         refreshAdBlockStatus()
+        refreshSmsPanel()
     }
 
     // ---------- 搜索/主页/浏览体验/隐私（F-15） ----------
@@ -414,12 +419,15 @@ class SettingsActivity : AppCompatActivity() {
             binding.settingsTabs.newTab().setText(R.string.asr_manage_title))
         binding.settingsTabs.addTab(
             binding.settingsTabs.newTab().setText(R.string.wxchat_manage_title))
+        binding.settingsTabs.addTab(
+            binding.settingsTabs.newTab().setText(R.string.settings_tab_sms))
         binding.settingsTabs.addOnTabSelectedListener(object : TabLayout.OnTabSelectedListener {
             override fun onTabSelected(tab: TabLayout.Tab) {
                 binding.pageOther.visibility = if (tab.position == 0) View.VISIBLE else View.GONE
                 binding.pageDownloads.visibility = if (tab.position == 1) View.VISIBLE else View.GONE
                 binding.pageAsr.visibility = if (tab.position == 2) View.VISIBLE else View.GONE
                 binding.pageWxchat.visibility = if (tab.position == 3) View.VISIBLE else View.GONE
+                binding.pageSms.visibility = if (tab.position == 4) View.VISIBLE else View.GONE
                 if (tab.position == 2) {
                     refreshAsrPanel()
                     if (!asrLoaded) loadTasks()
@@ -428,6 +436,7 @@ class SettingsActivity : AppCompatActivity() {
                     refreshWxChatPanel()
                     loadWxShares()
                 }
+                if (tab.position == 4) refreshSmsPanel()
             }
 
             override fun onTabUnselected(tab: TabLayout.Tab) {}
@@ -435,6 +444,7 @@ class SettingsActivity : AppCompatActivity() {
                 if (tab.position == 1) renderDownloads()
                 if (tab.position == 2) loadTasks()
                 if (tab.position == 3) loadWxShares()
+                if (tab.position == 4) refreshSmsPanel()
             }
         })
     }
@@ -1439,6 +1449,233 @@ class SettingsActivity : AppCompatActivity() {
     private val swipeThresholdPx by lazy { 100 * resources.displayMetrics.density }
 
     @Deprecated("Deprecated in Java")
+    // ---------- 12368 短信自动备份（F-32） ----------
+    private val smsPermLauncher =
+        registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { result ->
+            refreshSmsPanel()
+            if (result.values.any { !it }) {
+                Toast.makeText(this, R.string.sms_perm_denied_hint, Toast.LENGTH_LONG).show()
+            }
+        }
+
+    private var smsSwitchGuard = false
+    @Volatile private var smsBackfillRunning = false
+
+    private fun setupSmsBackup() {
+        binding.smsEnabledSwitch.isChecked = AppPrefs.isSmsBackupEnabled(this)
+        binding.smsEnabledSwitch.setOnCheckedChangeListener { _, isChecked ->
+            if (smsSwitchGuard) return@setOnCheckedChangeListener
+            if (isChecked && !SmsBackupManager.hasPermissions(this)) {
+                Toast.makeText(this, R.string.sms_enabled_need_perm, Toast.LENGTH_SHORT).show()
+                smsSwitchGuard = true
+                binding.smsEnabledSwitch.isChecked = false
+                smsSwitchGuard = false
+                smsPermLauncher.launch(
+                    arrayOf(Manifest.permission.READ_SMS, Manifest.permission.RECEIVE_SMS))
+                return@setOnCheckedChangeListener
+            }
+            AppPrefs.setSmsBackupEnabled(this, isChecked)
+            if (isChecked) SmsBackupManager.flushPendingAsync(this)
+            refreshSmsPanel()
+        }
+        binding.smsPermRow.setOnClickListener { requestSmsPermissions() }
+        binding.smsTokenRow.setOnClickListener { promptSmsToken() }
+        binding.smsBaseRow.setOnClickListener { promptSmsBaseUrl() }
+        binding.smsBackfillRow.setOnClickListener { runSmsBackfill() }
+        binding.smsFlushBtn.setOnClickListener { flushSmsQueue() }
+        refreshSmsPanel()
+    }
+
+    private fun requestSmsPermissions() {
+        if (SmsBackupManager.hasPermissions(this)) {
+            refreshSmsPanel()
+            return
+        }
+        smsPermLauncher.launch(
+            arrayOf(Manifest.permission.READ_SMS, Manifest.permission.RECEIVE_SMS))
+    }
+
+    private fun refreshSmsPanel() {
+        if (!::binding.isInitialized) return
+        smsSwitchGuard = true
+        binding.smsEnabledSwitch.isChecked = AppPrefs.isSmsBackupEnabled(this)
+        smsSwitchGuard = false
+
+        val permOk = SmsBackupManager.hasPermissions(this)
+        binding.smsPermStatus.text =
+            if (permOk) getString(R.string.sms_perm_granted)
+            else getString(R.string.sms_perm_missing)
+
+        val token = AppPrefs.getSmsToken(this)
+        binding.smsTokenStatus.text =
+            if (token.isNotEmpty()) getString(R.string.sms_token_set)
+            else getString(R.string.sms_token_unset)
+
+        binding.smsBaseStatus.text = SmsBackupManager.baseUrl(this)
+        binding.smsBackfillStatus.text = AppPrefs.getSmsLastBackfill(this)
+
+        val pending = SmsBackupStore.get(this).pendingCount()
+        binding.smsQueueStatus.text = getString(R.string.sms_queue_unknown_server, pending)
+        if (token.isNotEmpty()) {
+            val base = SmsBackupManager.baseUrl(this)
+            val appContext = applicationContext
+            Thread {
+                try {
+                    val total = SmsBackupManager.ping(appContext, base, token)
+                    runOnUiThread {
+                        if (isFinishing || isDestroyed) return@runOnUiThread
+                        binding.smsQueueStatus.text =
+                            getString(R.string.sms_queue_fmt, pending, total)
+                    }
+                } catch (e: Exception) {
+                    // 服务器不可达时保持「未核验」文案，不打扰
+                }
+            }.start()
+        }
+    }
+
+    private fun promptSmsToken() {
+        val input = EditText(this).apply {
+            setText(AppPrefs.getSmsToken(this@SettingsActivity))
+            setSingleLine(true)
+        }
+        val dialog = AlertDialog.Builder(this)
+            .setTitle(R.string.sms_token_dialog_title)
+            .setMessage(R.string.sms_token_dialog_hint)
+            .setView(input)
+            .setNegativeButton(android.R.string.cancel, null)
+            .setPositiveButton(getString(R.string.asr_token_verify), null as android.content.DialogInterface.OnClickListener?)
+            .show()
+        dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener {
+            val token = input.text.toString().trim()
+            val positive = dialog.getButton(AlertDialog.BUTTON_POSITIVE)
+            positive.isEnabled = false
+            val appContext = applicationContext
+            Thread {
+                var ok = false
+                var total = 0
+                var err: String? = null
+                try {
+                    total = SmsBackupManager.ping(appContext, SmsBackupManager.baseUrl(appContext), token)
+                    ok = true
+                } catch (e: Exception) {
+                    err = e.message ?: e.toString()
+                }
+                runOnUiThread {
+                    if (isFinishing || isDestroyed) return@runOnUiThread
+                    positive.isEnabled = true
+                    if (ok) {
+                        AppPrefs.setSmsToken(this, token)
+                        dialog.dismiss()
+                        Toast.makeText(this, getString(R.string.sms_token_verify_ok, total), Toast.LENGTH_SHORT).show()
+                        refreshSmsPanel()
+                    } else {
+                        Toast.makeText(this, getString(R.string.sms_toast_error_fmt, err), Toast.LENGTH_LONG).show()
+                    }
+                }
+            }.start()
+        }
+    }
+
+    private fun promptSmsBaseUrl() {
+        val input = EditText(this).apply {
+            setText(SmsBackupManager.baseUrl(this@SettingsActivity))
+            setSingleLine(true)
+        }
+        AlertDialog.Builder(this)
+            .setTitle(R.string.sms_base_dialog_title)
+            .setView(input)
+            .setNegativeButton(android.R.string.cancel, null)
+            .setNeutralButton(R.string.sms_base_reset_toast) { _, _ ->
+                AppPrefs.setSmsBaseUrl(this, "")
+                Toast.makeText(this, R.string.sms_base_reset_toast, Toast.LENGTH_SHORT).show()
+                refreshSmsPanel()
+            }
+            .setPositiveButton(android.R.string.ok) { _, _ ->
+                val v = input.text.toString().trim()
+                AppPrefs.setSmsBaseUrl(
+                    this,
+                    if (v.isBlank() || v == SmsBackupLogic.DEFAULT_BASE_URL) "" else v
+                )
+                refreshSmsPanel()
+            }
+            .show()
+    }
+
+    private fun runSmsBackfill() {
+        if (smsBackfillRunning) return
+        if (!SmsBackupManager.hasPermissions(this)) {
+            Toast.makeText(this, R.string.sms_backfill_need_perm, Toast.LENGTH_SHORT).show()
+            requestSmsPermissions()
+            return
+        }
+        if (AppPrefs.getSmsToken(this).isBlank()) {
+            Toast.makeText(this, R.string.sms_backfill_need_token, Toast.LENGTH_SHORT).show()
+            promptSmsToken()
+            return
+        }
+        AlertDialog.Builder(this)
+            .setMessage(R.string.sms_backfill_confirm)
+            .setNegativeButton(android.R.string.cancel, null)
+            .setPositiveButton(android.R.string.ok) { _, _ -> doSmsBackfill() }
+            .show()
+    }
+
+    private fun doSmsBackfill() {
+        smsBackfillRunning = true
+        binding.smsBackfillStatus.text = getString(R.string.sms_backfill_running)
+        val appContext = applicationContext
+        Thread {
+            try {
+                val res = SmsBackupManager.backfill(appContext) { _, uploaded ->
+                    runOnUiThread {
+                        if (isFinishing || isDestroyed) return@runOnUiThread
+                        binding.smsBackfillStatus.text =
+                            getString(R.string.sms_backfill_running) + " 已上存 $uploaded 条"
+                    }
+                }
+                runOnUiThread {
+                    if (isFinishing || isDestroyed) return@runOnUiThread
+                    val summary = getString(
+                        R.string.sms_backfill_done_fmt, res.matched, res.uploaded, res.duplicates)
+                    AppPrefs.setSmsLastBackfill(this, summary)
+                    binding.smsBackfillStatus.text = summary
+                    refreshSmsPanel()
+                }
+            } catch (e: Exception) {
+                runOnUiThread {
+                    if (isFinishing || isDestroyed) return@runOnUiThread
+                    binding.smsBackfillStatus.text =
+                        getString(R.string.sms_toast_error_fmt, e.message ?: e.toString())
+                }
+            } finally {
+                smsBackfillRunning = false
+            }
+        }.start()
+    }
+
+    private fun flushSmsQueue() {
+        if (AppPrefs.getSmsToken(this).isBlank()) {
+            Toast.makeText(this, R.string.sms_backfill_need_token, Toast.LENGTH_SHORT).show()
+            return
+        }
+        val appContext = applicationContext
+        Thread {
+            val err = SmsBackupManager.flushPending(appContext, force = true)
+            runOnUiThread {
+                if (isFinishing || isDestroyed) return@runOnUiThread
+                if (err == null) {
+                    Toast.makeText(this, R.string.sms_flush_done, Toast.LENGTH_SHORT).show()
+                } else {
+                    Toast.makeText(
+                        this, getString(R.string.sms_flush_result_fmt, err),
+                        Toast.LENGTH_LONG).show()
+                }
+                refreshSmsPanel()
+            }
+        }.start()
+    }
+
     override fun onBackPressed() {
         when {
             wxPreviewVisible() -> closeWxPreview()  // 一步回列表；预览内不做页内后退
