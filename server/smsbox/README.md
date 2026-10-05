@@ -1,7 +1,15 @@
 # smsbox — 12368 短信自动备份接收端（SER8）
 
 轻舟 APP 监听来自 12368 的短信（实时广播 + 历史回扫），经公网门面 POST 到本服务，
-去重后落 SQLite。**部署前 APP 与本服务均未上线**，本文件是部署批次的操作清单。
+去重后落 SQLite。数据盘位 /opt/smsbox/data/sms.db（系统盘，自动进 restic 每 5 分钟快照）。
+
+> **✅ 已部署（2026-10-05）**：SER8 `/opt/smsbox/`（systemd `smsbox.service`，0.0.0.0:8730，
+> UFW 仅内网+tailnet）；ECS nginx `api_orientlaw_cn` 已加 `/api/sms/` 反代（改前备份
+> `/root/nginx-backups/api_orientlaw_cn.bak-20261005-smsbox`）；看门狗探针
+> `smsbox:8730:/healthz` 已加（脚本备份 `/root/ser8-watchdog.sh.bak-smsbox-20261005`，本机留档
+> `D:\zcodexiangmu\养虾\archive\ser8-watchdog.sh` 已同步）。公网冒烟：healthz 200、ping 无令牌 401、
+> asrsvc 回归正常。真机 v1.13.0 已装、双权限已授、令牌已配置、自动备份已开启；
+> **首次历史回扫待用户解锁手机后在 设置→短信备份 点「回扫」执行**。下方部署步骤保留作重建/迁移参考。
 
 ## 架构
 
