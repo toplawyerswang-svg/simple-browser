@@ -501,9 +501,6 @@ class MainActivity : AppCompatActivity() {
         // 广告拦截引擎：异步加载内置+在线规则表
         AdBlockEngine.initAsync(applicationContext)
 
-        // 12368 短信备份：启动时补传一次离线期间攒下的队列
-        SmsBackupManager.flushPendingAsync(applicationContext)
-
         identityCount = AppPrefs.getIdentityCount(this)
 
         // 冷启动若从"身份快捷方式"进入（extra_identity>1 且设备支持），

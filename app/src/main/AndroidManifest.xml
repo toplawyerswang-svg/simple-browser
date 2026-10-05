@@ -10,9 +10,6 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" android:maxSdkVersion="28" />
-    <!-- 12368 短信自动备份：读收件箱回扫历史 + 收短信实时监听 -->
-    <uses-permission android:name="android.permission.READ_SMS" />
-    <uses-permission android:name="android.permission.RECEIVE_SMS" />
 
     <!-- 扫码用相机；声明 required=false 兼容无相机设备 -->
     <uses-feature android:name="android.hardware.camera" android:required="false" />
@@ -65,16 +62,6 @@
             android:name=".AsrProcessingService"
             android:exported="false"
             android:foregroundServiceType="dataSync" />
-
-        <!-- 12368 短信实时监听：BROADCAST_SMS 为签名级权限，仅系统可投递该广播，防伪造 -->
-        <receiver
-            android:name=".SmsReceiver"
-            android:exported="true"
-            android:permission="android.permission.BROADCAST_SMS">
-            <intent-filter android:priority="999">
-                <action android:name="android.provider.Telephony.SMS_RECEIVED" />
-            </intent-filter>
-        </receiver>
 
         <activity
             android:name=".MainActivity"

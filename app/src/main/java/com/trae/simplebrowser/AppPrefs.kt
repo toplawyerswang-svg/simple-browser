@@ -26,10 +26,6 @@ object AppPrefs {
     private const val KEY_TEXT_ZOOM = "text_zoom"
     private const val KEY_PENDING_CLEAR_CACHE = "pending_clear_cache"
     private const val KEY_LOGIN_HINT_DISABLED_HOSTS = "login_hint_disabled_hosts"
-    private const val KEY_SMS_ENABLED = "sms_backup_enabled"
-    private const val KEY_SMS_TOKEN = "sms_backup_token"
-    private const val KEY_SMS_BASE = "sms_backup_base_override"
-    private const val KEY_SMS_LAST_BACKFILL = "sms_last_backfill"
 
     /** 已创建的身份数量（含身份1）；默认 1，即升级用户保持原单身份行为 */
     fun getIdentityCount(context: Context): Int {
@@ -230,44 +226,6 @@ object AppPrefs {
         val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
         val updated = prefs.getStringSet(KEY_LOGIN_HINT_DISABLED_HOSTS, emptySet()).orEmpty() + host
         prefs.edit().putStringSet(KEY_LOGIN_HINT_DISABLED_HOSTS, updated).apply()
-    }
-
-    // ---------- 12368 短信自动备份（F-32） ----------
-    fun isSmsBackupEnabled(context: Context): Boolean =
-        context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
-            .getBoolean(KEY_SMS_ENABLED, false)
-
-    fun setSmsBackupEnabled(context: Context, value: Boolean) {
-        context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
-            .edit().putBoolean(KEY_SMS_ENABLED, value).apply()
-    }
-
-    fun getSmsToken(context: Context): String =
-        context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
-            .getString(KEY_SMS_TOKEN, "") ?: ""
-
-    fun setSmsToken(context: Context, token: String) {
-        context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
-            .edit().putString(KEY_SMS_TOKEN, token.trim()).apply()
-    }
-
-    /** 上传地址覆盖（空=官方入口）；真机联调 adb reverse 时指向本地服务。 */
-    fun getSmsBaseUrl(context: Context): String =
-        context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
-            .getString(KEY_SMS_BASE, "") ?: ""
-
-    fun setSmsBaseUrl(context: Context, url: String) {
-        context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
-            .edit().putString(KEY_SMS_BASE, url.trim()).apply()
-    }
-
-    fun getSmsLastBackfill(context: Context): String =
-        context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
-            .getString(KEY_SMS_LAST_BACKFILL, "") ?: ""
-
-    fun setSmsLastBackfill(context: Context, summary: String) {
-        context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
-            .edit().putString(KEY_SMS_LAST_BACKFILL, summary).apply()
     }
 
     /** 设置页发起的"清缓存"请求，由 MainActivity.onResume 执行（缓存清理需要 WebView 实例） */
