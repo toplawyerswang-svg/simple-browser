@@ -1,0 +1,116 @@
+<?xml version="1.0" encoding="utf-8"?>
+<FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent">
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:orientation="vertical"
+        android:background="#F7F6F1">
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:gravity="center_vertical"
+            android:orientation="horizontal"
+            android:background="#FFFFFF"
+            android:paddingStart="8dp"
+            android:paddingEnd="12dp"
+            android:paddingTop="10dp"
+            android:paddingBottom="10dp">
+
+            <TextView
+                android:id="@+id/btn_back"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:minWidth="44dp"
+                android:minHeight="44dp"
+                android:gravity="center"
+                android:text="‹"
+                android:textSize="22sp"
+                android:textStyle="bold"
+                android:textColor="#212121"
+                android:contentDescription="@string/folder_manage_back" />
+
+            <TextView
+                android:id="@+id/tv_title"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:layout_marginStart="4dp"
+                android:textSize="16sp"
+                android:textStyle="bold"
+                android:textColor="#212121"
+                android:maxLines="1"
+                android:ellipsize="end"
+                android:text="@string/folder_title" />
+
+            <TextView
+                android:id="@+id/btn_share"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:minWidth="44dp"
+                android:minHeight="44dp"
+                android:gravity="center"
+                android:text="@string/folder_share_btn"
+                android:textSize="13sp"
+                android:textColor="#1565C0"
+                android:visibility="gone"
+                android:contentDescription="@string/folder_share_btn" />
+
+            <TextView
+                android:id="@+id/btn_more"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:minWidth="44dp"
+                android:minHeight="44dp"
+                android:gravity="center"
+                android:text="⋯"
+                android:textSize="18sp"
+                android:textStyle="bold"
+                android:textColor="#212121"
+                android:visibility="gone"
+                android:contentDescription="@string/folder_more" />
+
+            <TextView
+                android:id="@+id/btn_new"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:minWidth="44dp"
+                android:minHeight="44dp"
+                android:gravity="center"
+                android:text="@string/folder_new"
+                android:textSize="13sp"
+                android:textColor="#1565C0"
+                android:contentDescription="@string/folder_create_title" />
+        </LinearLayout>
+
+        <ListView
+            android:id="@+id/folder_list"
+            android:layout_width="match_parent"
+            android:layout_height="0dp"
+            android:layout_weight="1"
+            android:layout_marginTop="6dp"
+            android:divider="@null" />
+
+        <TextView
+            android:id="@+id/folder_empty_hint"
+            android:layout_width="match_parent"
+            android:layout_height="0dp"
+            android:layout_weight="1"
+            android:gravity="center"
+            android:text="@string/folder_list_empty"
+            android:textSize="14sp"
+            android:textColor="#8A8A8A"
+            android:lineSpacingExtra="4dp" />
+    </LinearLayout>
+
+    <!-- 条目页内预览：全屏 WebView，返回键关闭回到文件夹 -->
+    <FrameLayout
+        android:id="@+id/preview_container"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:background="#FFFFFF"
+        android:visibility="gone" />
+</FrameLayout>

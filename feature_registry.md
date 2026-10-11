@@ -9,7 +9,7 @@
 | 应用名称                      | 轻舟浏览器                                             |
 | applicationId             | `com.trae.lightboat`                              |
 | namespace（Java 包名）        | `com.trae.simplebrowser`                          |
-| versionCode / versionName | 25 / 1.7.1                                        |
+| versionCode / versionName | 47 / 1.15.0                                       |
 | minSdk / targetSdk        | 24 / 34                                           |
 | 旧版共存说明                    | 旧应用"极简浏览器"（`com.trae.simplebrowser`）仍可同机安装，二者互不覆盖 |
 
@@ -431,3 +431,18 @@
 | 模拟器验证 | UI 全流程：权限申请弹窗→已授予 ✓；上传地址改指本地 smsbox（adb reverse）✓；令牌输入→/ping 核验通过显示服务器计数 ✓；开关开启 ✓；回扫确认框→结果摘要展示 ✓；仪器测试 SmsBackupPipelineTest（入队→冲刷→HTTP→落库→sent 记账）OK、SmsReceiverPduTest（手工构造真实 SMS-DELIVER PDU→receiver→上传→服务器终态断言）OK；清理后冒烟状态干净 ✓                                      |
 | 真机验证 | 华为 FCP-AN10 本批开发期间未连接 adb，**装机与真机冒烟待补**（install -r 覆盖装、真机权限弹窗、真实 12368 短信到达观察实时链路）；手机里真实历史短信回扫须待服务端部署后在真机执行，避免测试数据混入正式库                                                                                                                                              |
 | 已知边界 | 实时接收依赖系统广播派发（静态注册，重启后仍有效）；部分 ROM 强杀后台不影响 manifest 接收器；鸿蒙对通知权限的限制与本功能无关（静默上存无通知）                                                                                                                                                                                       |
+
+
+### F-33 资料夹：录音转写与聊天记录的跨类分组 + 聚合分享
+
+| 项目    | 内容                                                                                                                                                                                                                                    |
+| ----- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 定位    | 把多条录音转写任务与多个聊天记录分享归入同一文件夹（一个文件夹内可混放两类内容），统一浏览、整体分享；服务端存储+APP 双侧功能，本批已部署（asrsvc）并装机（v1.15.0/47）                                                                                                                                    |
+| 入口    | 设置页「音视频识别」与「聊天记录分享」两个页签列表顶部各一条「📁 资料夹」入口行（两处进同一套文件夹）；记录长按菜单新增「移入文件夹」（弹出已有文件夹列表 + 新建项）；音视频识别长按菜单改写为 结果/移入文件夹/删除，聊天记录长按菜单改写为 预览/链接/移入文件夹/删除                                                                                |
+| 文件夹页 | 新建 FolderActivity：列表态（文件夹名+条目数，长按 打开/改名/删除）↔ 详情态（🎙/💬 图标+标题+元信息，失效条目红字标注，长按移出文件夹不删本体）同页切换，BACK 逐级返回；详情页「分享」按钮（有效期 1h~30天 / 打开次数 1/5/10/不限）生成聚合分享链接，「⋯」菜单改名/删除                                                                        |
+| 聚合分享 | 接收方一个链接一张提取码：目录页（/s/&lt;sid&gt;，条目卡片清单+有效状态）→ 条目页（/s/&lt;sid&gt;/item/&lt;idx&gt;）逐条查看——录音条目=转写页（双标签/AI摘要/段落回听），聊天条目=原气泡流页（图片/视频/附件/OCR）；录音段落回听走新端点 /s/&lt;sid&gt;/item/&lt;idx&gt;/audio（文件夹提取码鉴权）；聊天页 Agent 入口改指 folder.json                                    |
+| Agent | GET /s/&lt;sid&gt;/folder.json?pwd= 返回整夹结构化 JSON：录音条目含 text/segments/speaker_names(剔声纹)/summary/todos/音频直链；聊天条目含 messages(逐条 realname/is_self/file_url/ocr_text)/attachments 直链/realnames；失效条目带 error 占位                                                                                                                                              |
+| 服务端   | app.py 新增：data/&lt;fid&gt;.folder.json 存储（成员仅存引用 kind=task/wxchat+ref，本体删除后条目自动显示已失效）；接口 GET/POST /api/asr/folders、GET/DELETE /api/asr/folders/&lt;fid&gt;、POST rename、items、items/remove、share；分享页 folder_share_page/folder_item_route/folder_item_task_page/folder_item_wxchat_page/folder_item_audio/folder_json；每用户 100 夹、单夹 50 条上限；文件夹分享不设独立寿命字段但聊天条目受原分享 30 天寿命约束                                                                              |
+| 关联代码 | FolderActivity.kt、activity_folder.xml、folder_list_item.xml、folder_entry_item.xml、AsrClient（FolderInfo/FolderEntry/FolderDetail + 7 个接口）、SettingsActivity（两页签入口行+长按菜单+showAddToFolderDialog/promptNewFolderAndAdd/addToFolder）、activity_settings.xml、strings（folder_* 15 条）、server/asrsvc/app.py                                                                                     |
+| 验证    | 服务端 curl 全链路冒烟 13 项 ✓（建夹/加两类条目/去重/详情/分享/目录页/条目页/切片 mp3 真实产出/错码 403/公网 nginx 200/清理）；真机（华为 FCP-AN10）：建夹→长按移入录音→长按移入聊天→详情两类条目→点录音进结果页→点聊天开页内预览→分享生成链接 ✓；浏览器（IAB）实测：目录页截图 ✓、录音条目页说话人分段+点段真实播放（audio readyState=4 playing）✓、聊天条目页气泡+图片+返回目录 ✓、folder.json 结构完整（分段/全文/摘要/70条消息/附件直链/真名）✓                                        |
+| 已知边界 | 文件夹内成员被删除/过期后条目显示「已失效」（不自动移除，可在详情页长按清理）；文件夹分享链接失效仅影响分享，不删文件夹；聊天条目的分享页依赖原 chat 分享存活（30 天）                                                                                                                          |

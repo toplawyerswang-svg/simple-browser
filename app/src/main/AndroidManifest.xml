@@ -52,6 +52,11 @@
             android:exported="false"
             android:screenOrientation="portrait" />
 
+        <activity
+            android:name=".FolderActivity"
+            android:exported="false"
+            android:screenOrientation="portrait" />
+
         <service
             android:name=".VideoDownloadService"
             android:exported="false"

@@ -126,6 +126,108 @@ def load_share(sid):
     return sh
 
 
+# ---------------------------------------------------------------- 资料夹（录音转写+聊天记录的跨类分组）
+# 文件夹把录音转写任务与聊天记录分享归到同一分组，用于统一浏览与聚合分享。
+# 存储：data/<fid>.folder.json；成员只存引用（kind=task→任务id，kind=wxchat→聊天分享id），
+# 成员本体被删除/过期后条目自动显示为「已失效」，文件夹本身不自动过期。
+
+FOLDER_MAX_COUNT = 100    # 每用户文件夹数量上限
+FOLDER_MAX_ITEMS = 50     # 单个文件夹条目上限
+
+
+def save_folder(fd):
+    with _lock:
+        p = DATA / (fd["folder_id"] + ".folder.json")
+        tmp = DATA / (fd["folder_id"] + ".folder.json.tmp")
+        tmp.write_text(json.dumps(fd, ensure_ascii=False), encoding="utf-8")
+        os.replace(tmp, p)
+
+
+def load_folder(fid):
+    p = DATA / (str(fid) + ".folder.json")
+    if not p.exists():
+        return None
+    try:
+        return json.loads(p.read_text(encoding="utf-8"))
+    except ValueError:
+        return None
+
+
+def _count_folders(user):
+    n = 0
+    for p in DATA.glob("*.folder.json"):
+        try:
+            if json.loads(p.read_text(encoding="utf-8")).get("owner") == user:
+                n += 1
+        except (OSError, ValueError):
+            continue
+    return n
+
+
+def _folder_owned(fid, user):
+    """fid 格式与归属校验，通过返回文件夹，否则 None。"""
+    if not re.fullmatch(r"[0-9a-f]{6,32}", str(fid)):
+        return None
+    fd = load_folder(fid)
+    if fd is None or fd.get("owner") != user:
+        return None
+    return fd
+
+
+def _member_owned(kind, ref, user):
+    """加入条目时校验成员存在且属于该用户；返回错误文案，None=通过。"""
+    if kind == "task":
+        st = load_task(str(ref))
+        if st is None or st.get("owner") != user:
+            return "录音转写任务不存在"
+        if "result" not in st:
+            return "该录音转写尚未完成，完成后才能加入"
+        return None
+    if kind == "wxchat":
+        sh = load_share(str(ref))
+        if sh is None or sh.get("type") != "wxchat" or sh.get("owner") != user:
+            return "聊天记录分享不存在或已过期"
+        return None
+    return "未知条目类型"
+
+
+def folder_entry_view(item):
+    """单条目摘要（标题/元信息/存活状态），管理接口与分享目录页共用。"""
+    kind, ref = item.get("kind"), str(item.get("ref") or "")
+    if kind == "task":
+        st = load_task(ref)
+        if st is None:
+            return {"kind": kind, "ref": ref, "alive": False, "error": "转写任务已删除"}
+        if "result" not in st:
+            return {"kind": kind, "ref": ref, "alive": False, "error": "转写尚未完成"}
+        r = st["result"]
+        sec = int((r.get("duration_ms") or 0) / 1000)
+        dur = ("%d分%02d秒" % (sec // 60, sec % 60)) if sec else ""
+        meta = " · ".join(x for x in (
+            "视频" if st.get("is_video") else "录音",
+            dur,
+            time.strftime("%Y-%m-%d %H:%M", time.localtime(st.get("created_at") or 0)),
+            "可回听原音" if (DATA / (ref + ".audio")).exists() else "原音已过期") if x)
+        return {"kind": kind, "ref": ref, "alive": True,
+                "title": st.get("display_name") or st.get("filename") or "未命名录音",
+                "meta": meta, "duration_ms": r.get("duration_ms") or 0,
+                "is_video": bool(st.get("is_video"))}
+    if kind == "wxchat":
+        sh = load_share(ref)
+        if sh is None or sh.get("type") != "wxchat":
+            return {"kind": kind, "ref": ref, "alive": False,
+                    "error": "聊天记录分享已过期或已删除"}
+        chat = sh.get("chat") or {}
+        meta = " · ".join(x for x in (
+            "%d条消息" % (chat.get("message_count") or 0),
+            "%d人" % len(chat.get("participants") or []),
+            "有效至 " + time.strftime("%Y-%m-%d", time.localtime(sh.get("expires_at") or 0))) if x)
+        return {"kind": kind, "ref": ref, "alive": True,
+                "title": sh.get("filename") or "聊天记录", "meta": meta,
+                "url": "%s/%s?pwd=%s" % (SHARE_BASE, ref, sh["pwd"])}
+    return {"kind": str(kind), "ref": ref, "alive": False, "error": "未知条目类型"}
+
+
 def load_users():
     """users.json: {"users":[{"user":"用户A","token":"..."},...]} -> {token: user}"""
     try:
@@ -1199,6 +1301,9 @@ def share_page(sid):
     # 微信聊天记录转存分享：独立渲染，不计音频任务的打开次数
     if sh.get("type") == "wxchat":
         return wxchat_share_page(sh, sid)
+    # 资料夹聚合分享：目录页（打开计数在目录页内完成），条目页经 /s/<sid>/item/<idx>
+    if sh.get("type") == "folder":
+        return folder_share_page(sh, sid)
     # 打开次数：每次密码校验通过并查看内容计一次；超出后不再展示
     max_opens = int(sh.get("max_opens") or 0)
     opens = int(sh.get("opens") or 0)
@@ -2071,6 +2176,182 @@ def _wxchat_pwd_ok(sh, pwd):
     return str(pwd or "").strip().upper() == str(sh["pwd"]).upper()
 
 
+# ---------------------------------------------------------------- 资料夹管理接口
+
+@app.get("/api/asr/folders")
+def folder_list():
+    """我的文件夹列表（设置页两个管理页签顶部的资料夹入口）。"""
+    user = authenticate()
+    if user is None:
+        return jsonify(error="unauthorized"), 401
+    items = []
+    for p in DATA.glob("*.folder.json"):
+        try:
+            fd = json.loads(p.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        if fd.get("owner") != user:
+            continue
+        all_items = fd.get("items") or []
+        alive = sum(1 for it in all_items if folder_entry_view(it)["alive"])
+        items.append({"folder_id": fd["folder_id"], "name": fd.get("name") or "未命名文件夹",
+                      "item_count": len(all_items), "alive_count": alive,
+                      "created_at": fd.get("created_at")})
+    items.sort(key=lambda x: x.get("created_at") or 0, reverse=True)
+    return jsonify(folders=items)
+
+
+@app.post("/api/asr/folders")
+def folder_create():
+    user = authenticate()
+    if user is None:
+        return jsonify(error="unauthorized"), 401
+    j = request.get_json(silent=True) or {}
+    name = str(j.get("name") or "").strip()[:100]
+    if not name:
+        return jsonify(error="文件夹名不能为空"), 400
+    if _count_folders(user) >= FOLDER_MAX_COUNT:
+        return jsonify(error="文件夹数量已达上限（%d个）" % FOLDER_MAX_COUNT), 400
+    fid = uuid.uuid4().hex[:10]
+    save_folder({"folder_id": fid, "name": name, "owner": user,
+                 "created_at": time.time(), "items": []})
+    print("folder created by", user, ":", fid, name, flush=True)
+    return jsonify(folder_id=fid, name=name)
+
+
+@app.get("/api/asr/folders/<fid>")
+def folder_detail(fid):
+    user = authenticate()
+    if user is None:
+        return jsonify(error="unauthorized"), 401
+    fd = _folder_owned(fid, user)
+    if fd is None:
+        return jsonify(error="not found"), 404
+    entries = []
+    for i, it in enumerate(fd.get("items") or []):
+        v = folder_entry_view(it)
+        v["index"] = i
+        v["added_at"] = it.get("added_at")
+        entries.append(v)
+    return jsonify(folder_id=fid, name=fd.get("name"),
+                   created_at=fd.get("created_at"), entries=entries)
+
+
+@app.post("/api/asr/folders/<fid>/rename")
+def folder_rename(fid):
+    user = authenticate()
+    if user is None:
+        return jsonify(error="unauthorized"), 401
+    fd = _folder_owned(fid, user)
+    if fd is None:
+        return jsonify(error="not found"), 404
+    j = request.get_json(silent=True) or {}
+    name = str(j.get("name") or "").strip()[:100]
+    if not name:
+        return jsonify(error="文件夹名不能为空"), 400
+    fd["name"] = name
+    save_folder(fd)
+    # 已生成的文件夹分享标题同步（share.filename 仅作展示兜底，目录页实时读文件夹名）
+    print("folder renamed by", user, ":", fid, "->", name, flush=True)
+    return jsonify(renamed=True, name=name)
+
+
+@app.delete("/api/asr/folders/<fid>")
+def folder_delete(fid):
+    user = authenticate()
+    if user is None:
+        return jsonify(error="unauthorized"), 401
+    fd = _folder_owned(fid, user)
+    if fd is None:
+        return jsonify(error="not found"), 404
+    (DATA / (str(fid) + ".folder.json")).unlink(missing_ok=True)
+    print("folder deleted by", user, ":", fid, flush=True)
+    return jsonify(deleted=True)
+
+
+@app.post("/api/asr/folders/<fid>/items")
+def folder_add_item(fid):
+    """把录音转写任务或聊天记录分享加入文件夹（去重）。body: {"kind","ref"}"""
+    user = authenticate()
+    if user is None:
+        return jsonify(error="unauthorized"), 401
+    fd = _folder_owned(fid, user)
+    if fd is None:
+        return jsonify(error="not found"), 404
+    j = request.get_json(silent=True) or {}
+    kind = str(j.get("kind") or "").strip()
+    ref = str(j.get("ref") or "").strip()
+    err = _member_owned(kind, ref, user)
+    if err:
+        return jsonify(error=err), 404
+    items = fd.get("items") or []
+    if any(it.get("kind") == kind and str(it.get("ref")) == ref for it in items):
+        return jsonify(added=False, message="已在该文件夹中")
+    if len(items) >= FOLDER_MAX_ITEMS:
+        return jsonify(error="单个文件夹最多%d条" % FOLDER_MAX_ITEMS), 400
+    items.append({"kind": kind, "ref": ref, "added_at": time.time()})
+    fd["items"] = items
+    save_folder(fd)
+    return jsonify(added=True, item_count=len(items))
+
+
+@app.post("/api/asr/folders/<fid>/items/remove")
+def folder_remove_item(fid):
+    """把条目移出文件夹（不删除成员本体）。body: {"kind","ref"}"""
+    user = authenticate()
+    if user is None:
+        return jsonify(error="unauthorized"), 401
+    fd = _folder_owned(fid, user)
+    if fd is None:
+        return jsonify(error="not found"), 404
+    j = request.get_json(silent=True) or {}
+    kind = str(j.get("kind") or "").strip()
+    ref = str(j.get("ref") or "").strip()
+    items = fd.get("items") or []
+    kept = [it for it in items
+            if not (it.get("kind") == kind and str(it.get("ref")) == ref)]
+    if len(kept) == len(items):
+        return jsonify(error="条目不在该文件夹中"), 404
+    fd["items"] = kept
+    save_folder(fd)
+    return jsonify(removed=True, item_count=len(kept))
+
+
+@app.post("/api/asr/folders/<fid>/share")
+def folder_create_share(fid):
+    """为文件夹生成聚合分享：一个链接一张提取码，接收方目录浏览、逐条查看。"""
+    user = authenticate()
+    if user is None:
+        return jsonify(error="unauthorized"), 401
+    fd = _folder_owned(fid, user)
+    if fd is None:
+        return jsonify(error="not found"), 404
+    if not (fd.get("items") or []):
+        return jsonify(error="文件夹为空，先加入录音或聊天记录"), 400
+    try:
+        hours = int(request.form.get("validity_hours", SHARE_DEFAULT_HOURS))
+        max_opens = int(request.form.get("max_opens", SHARE_DEFAULT_MAX_OPENS))
+    except (TypeError, ValueError):
+        return jsonify(error="validity_hours / max_opens 参数错误"), 400
+    if not (1 <= hours <= 24 * 60):
+        return jsonify(error="有效期需在1小时~60天之间"), 400
+    if not (0 <= max_opens <= 100000):
+        return jsonify(error="可打开次数参数错误"), 400
+    sid = uuid.uuid4().hex[:10]
+    pwd = "".join(secrets.choice(PWD_ALPHABET) for _ in range(PWD_LENGTH))
+    share = {"share_id": sid, "pwd": pwd, "type": "folder", "folder_id": fid,
+             "owner": user, "created_at": time.time(),
+             "expires_at": time.time() + hours * 3600,
+             "validity_hours": hours, "max_opens": max_opens, "opens": 0,
+             "filename": fd.get("name") or "资料夹"}
+    save_share(share)
+    print("folder shared by", user, ":", fid, "->", sid, flush=True)
+    return jsonify(share_id=sid, pwd=pwd,
+                   url="%s/%s?pwd=%s" % (SHARE_BASE, sid, pwd),
+                   validity_hours=hours, max_opens=max_opens,
+                   expires_at=share["expires_at"])
+
+
 @app.get("/api/asr/wxchat/list")
 def wxchat_list():
     """我的聊天记录转存分享列表（设置页管理入口）。"""
@@ -2388,6 +2669,435 @@ def wxchat_share_page(sh, sid):
             "<meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">"
             "<title>%s</title></head><body>%s"
             % (html.escape(chat["title"]), body))
+
+
+# ---------------------------------------------------------------- 资料夹分享页（目录+逐条查看）
+
+FOLDER_CSS = """
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:#f2f1ec;font-family:-apple-system,'Segoe UI',Roboto,'Helvetica Neue','PingFang SC','Microsoft YaHei',sans-serif}
+.fwrap{max-width:680px;margin:0 auto;padding:22px 14px 44px}
+.fwrap h1{font-size:19px;color:#111;margin-bottom:6px;word-break:break-all}
+.fmeta{font-size:12px;color:#888;margin-bottom:16px}
+.flist{display:flex;flex-direction:column;gap:8px}
+.fitem{display:flex;align-items:center;gap:12px;background:#fff;border-radius:10px;padding:13px 14px;text-decoration:none;color:#111;box-shadow:0 1px 2px rgba(0,0,0,.04)}
+.fitem.dead{opacity:.62}
+.fico{flex:none;width:38px;height:38px;border-radius:8px;background:#eef3fb;display:flex;align-items:center;justify-content:center;font-size:19px}
+.fmain{flex:1;min-width:0;display:flex;flex-direction:column;gap:3px}
+.ftitle{font-size:15px;color:#111;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.fsub{font-size:12px;color:#8a8a8a;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.farrow{flex:none;color:#c0c0c0;font-size:20px}
+.fbar{margin-top:18px;display:flex;gap:8px;flex-wrap:wrap}
+.fbar a,.fbar button{font-size:13px;padding:7px 14px;border-radius:6px;border:1px solid #d0d0d0;background:#fff;color:#333;text-decoration:none;cursor:pointer}
+.fback{display:inline-block;font-size:13px;color:#576b95;background:#fff;border:1px solid #d0d0d0;border-radius:6px;padding:6px 12px;text-decoration:none;margin-bottom:12px}
+"""
+
+_FOLDER_BACK = ('<a class="fback" href="/s/%s?pwd=%s">‹ 返回目录</a>')
+
+
+def _folder_share_checked(sid, sh):
+    """条目页公共校验：返回 (folder, error_html, code)。error_html 非 None 时直接返回。"""
+    if not re.fullmatch(r"[0-9a-f]{6,32}", sid):
+        return None, (render_page("错误", "", "<div class=\"gate\">链接不存在或已过期</div>"), 404)
+    if int(sh.get("max_opens") or 0) and int(sh.get("opens") or 0) >= int(sh.get("max_opens")):
+        return None, (render_page("错误", "",
+                                  "<div class=\"gate\">打开次数已用完（上限 %d 次）</div>"
+                                  % int(sh.get("max_opens"))), 200)
+    fd = load_folder(sh.get("folder_id") or "")
+    if fd is None:
+        return None, (render_page("错误", "",
+                                  "<div class=\"gate\">文件夹已被删除，链接失效</div>"), 200)
+    return fd, None
+
+
+def folder_share_page(sh, sid):
+    """资料夹聚合分享目录页：条目清单，点开逐条查看；打开计数在本页完成。"""
+    fd = load_folder(sh.get("folder_id") or "")
+    if fd is None:
+        return render_page(sh.get("filename") or "资料夹", "",
+                           "<div class=\"gate\">文件夹已被删除，链接失效</div>"), 200
+    max_opens = int(sh.get("max_opens") or 0)
+    opens = int(sh.get("opens") or 0)
+    if max_opens and opens >= max_opens:
+        return render_page("错误", "",
+                           "<div class=\"gate\">打开次数已用完（上限 %d 次）</div>" % max_opens), 200
+    sh["opens"] = opens + 1
+    save_share(sh)
+    rows, alive = [], 0
+    for i, it in enumerate(fd.get("items") or []):
+        v = folder_entry_view(it)
+        if v["alive"]:
+            alive += 1
+            rows.append(
+                '<a class="fitem" href="/s/%s/item/%d?pwd=%s">'
+                '<span class="fico">%s</span>'
+                '<span class="fmain"><span class="ftitle">%s</span>'
+                '<span class="fsub">%s</span></span>'
+                '<span class="farrow">›</span></a>'
+                % (sid, i, sh["pwd"],
+                   "🎙" if v["kind"] == "task" else "💬",
+                   html.escape(v["title"]), html.escape(v["meta"])))
+        else:
+            rows.append(
+                '<div class="fitem dead"><span class="fico">⚠️</span>'
+                '<span class="fmain"><span class="ftitle">%s</span>'
+                '<span class="fsub">%s</span></span></div>'
+                % (html.escape(v.get("title") or "条目已失效"),
+                   html.escape(v.get("error") or "")))
+    name = fd.get("name") or "资料夹"
+    meta = "%d 个条目（%d 个有效） · 有效至 %s · 轻舟浏览器转存" % (
+        len(rows), alive,
+        time.strftime("%Y-%m-%d %H:%M", time.localtime(sh.get("expires_at") or 0)))
+    body = ('<style>%s</style><div class="fwrap"><h1>📁 %s</h1><div class="fmeta">%s</div>'
+            '<div class="flist">%s</div>'
+            '<div class="fbar"><a href="/s/%s/folder.json?pwd=%s">Agent 数据（JSON）</a></div>'
+            '</div>' % (FOLDER_CSS, html.escape(name), html.escape(meta),
+                        "".join(rows), sid, sh["pwd"]))
+    return render_page(name, "", body)
+
+
+@app.get("/s/<sid>/item/<int:idx>")
+def folder_item_route(sid, idx):
+    """资料夹分享的单条目页：kind=task 渲染转写视图，kind=wxchat 渲染气泡流。"""
+    if not re.fullmatch(r"[0-9a-f]{6,32}", sid):
+        return render_page("错误", "", "<div class=\"gate\">链接不存在或已过期</div>"), 404
+    sh = load_share(sid)
+    if sh is None or sh.get("type") != "folder":
+        return render_page("错误", "", "<div class=\"gate\">链接不存在或已过期</div>"), 404
+    if request.args.get("pwd", "").strip().upper() != str(sh["pwd"]).upper():
+        return render_gate(sid, request.args.get("pwd", "") != ""), 200
+    fd, err = _folder_share_checked(sid, sh)
+    if err is not None:
+        return err
+    items = fd.get("items") or []
+    if not (0 <= idx < len(items)):
+        return render_page("错误", "", "<div class=\"gate\">条目不存在</div>"), 404
+    item = items[idx]
+    if item.get("kind") == "task":
+        return folder_item_task_page(sh, sid, idx, item)
+    if item.get("kind") == "wxchat":
+        return folder_item_wxchat_page(sh, sid, idx, item)
+    return render_page("错误", "", "<div class=\"gate\">未知条目类型</div>"), 404
+
+
+def folder_item_wxchat_page(sh, sid, idx, item):
+    """聊天记录条目：直接复用原分享的气泡流渲染（附件/图片走原分享端点，不重复鉴权逻辑）。
+    Agent JSON 入口改指文件夹的 folder.json——整夹内容一个提取码贯通。"""
+    wsh = load_share(str(item.get("ref") or ""))
+    if wsh is None or wsh.get("type") != "wxchat":
+        body = ('<style>%s</style><div class="gate">该聊天记录分享已过期或已删除'
+                '<div style="margin-top:14px">%s</div></div>'
+                % (FOLDER_CSS, _FOLDER_BACK % (sid, sh["pwd"])))
+        return render_page("条目已失效", "", body), 200
+    page = wxchat_share_page(wsh, str(item["ref"]))
+    # 页内 Agent 入口改为文件夹级 folder.json（原为原分享的 chat.json）
+    page = page.replace('/s/%s/chat.json?pwd=%s' % (item["ref"], wsh["pwd"]),
+                        '/s/%s/folder.json?pwd=%s' % (sid, sh["pwd"]))
+    return page.replace('<div class="wrap">',
+                        '<div class="wrap">' + _FOLDER_BACK % (sid, sh["pwd"]), 1)
+
+
+def folder_item_task_page(sh, sid, idx, item):
+    """录音/视频转写条目：与单条分享页同构（双标签/回听/译文切换），音频切片走文件夹端点。"""
+    tid = str(item.get("ref") or "")
+    st = load_task(tid)
+    if st is None or "result" not in st:
+        body = ('<style>%s</style><div class="gate">该转写结果已失效'
+                '<div style="margin-top:14px">%s</div></div>'
+                % (FOLDER_CSS, _FOLDER_BACK % (sid, sh["pwd"])))
+        return render_page("条目已失效", "", body), 200
+    result = st["result"]
+    opts = st.get("options", {})
+    allow_play = bool(sh.get("allow_segment_play", True))
+    show_names = bool(sh.get("show_speaker_names", True))
+
+    def segs_js(key):
+        arr = result.get(key) or []
+        return json.dumps(arr, ensure_ascii=False).replace("</", "<\\/")
+
+    names_public = {}
+    if show_names:
+        for k, v in (result.get("speaker_names") or {}).items():
+            names_public[k] = {kk: vv for kk, vv in v.items() if kk != "embedding"}
+    names_js = json.dumps(names_public, ensure_ascii=False).replace("</", "<\\/")
+
+    total_ms = result.get("duration_ms") or 0
+    total_sec = int(total_ms / 1000)
+    dur_text = ("%d分%02d秒" % (total_sec // 60, total_sec % 60)) if total_sec else ""
+    meta = []
+    if dur_text:
+        meta.append("时长 " + dur_text)
+    if opts.get("diarize"):
+        meta.append("区分说话人")
+    if result.get("mandarin_segments"):
+        meta.append("方言已译普通话")
+    if not (DATA / (tid + ".audio")).exists():
+        meta.append("原音已过期，不可回听")
+    meta_html = " · ".join(meta)
+    has_mand = 1 if result.get("mandarin_segments") else 0
+
+    summary = str(result.get("summary") or "")
+    todos = result.get("todos") or []
+    ai_inner = ""
+    if summary or todos:
+        parts = []
+        if summary:
+            parts.append('<div class="aih">AI 摘要</div><div class="aitxt">%s</div>'
+                         % html.escape(summary))
+        if todos:
+            titems = ""
+            for t in todos:
+                extra = ""
+                if t.get("owner") or t.get("due"):
+                    extra = '<span class="meta">　%s · %s</span>' % (
+                        html.escape(t.get("owner") or "未指定"),
+                        html.escape(t.get("due") or "未指定"))
+                titems += '<li><label><input type="checkbox">%s%s</label></li>' % (
+                    html.escape(t.get("task", "")), extra)
+            parts.append('<div class="aih">待办事项</div><ul class="todos">%s</ul>' % titems)
+        ai_inner = ('<div class="ai"><button onclick="copyAI()">复制摘要与待办</button>'
+                    + "".join(parts) + "</div>")
+    elif not result.get("summary_done"):
+        ai_inner = '<div class="meta" style="margin:6px 0 10px">AI 摘要与待办生成中，请稍后刷新页面查看…</div>'
+        threading.Thread(target=generate_summary_todos, args=(st,), daemon=True).start()
+    has_ai = 1 if ai_inner else 0
+    ai_tab = '<div class="tab" onclick="switchTab(1,this)">AI 摘要 · 待办</div>' if has_ai else ""
+    ai_page = ('<div id="page1" style="display:none">' + ai_inner + "</div>") if has_ai else ""
+    summary_js = json.dumps(summary, ensure_ascii=False).replace("</", "<\\/")
+    todos_js = json.dumps(todos, ensure_ascii=False).replace("</", "<\\/")
+
+    title = st.get("display_name") or st.get("filename") or "转写结果"
+    body = ("<div class=\"wrap\">%s<h1>%s</h1><div class=\"meta\">%s · 轻舟浏览器转写</div>"
+            "<div class=\"tabs\">"
+            "<div class=\"tab active\" onclick=\"switchTab(0,this)\">识别结果</div>"
+            "%s"
+            "</div>"
+            "<div id=\"page0\">"
+            "<button id=\"tg\" style=\"display:%s\">查看原文</button>"
+            "<button onclick=\"copyAll()\">复制全文</button>"
+            "%s"
+            "<div id=\"content\"></div>"
+            "</div>"
+            "%s"
+            "</div>"
+            "<div id=\"toast\"></div>"
+            "<script>"
+            "var PWD=%s;var SID='%s';var ITEM=%d;var ORIG=%s;var MAND=%s;var NAMES=%s;var HAS_TS=%d;var HAS_SPK=%d;var CAN_PLAY=%d;var SHOW_NAME=%d;var SUMMARY=%s;var TODOS=%s;var mand=false;"
+            "var colors=['s0','s1','s2','s3'];"
+            "function spkInfo(id){return NAMES[String(id)]||null;}"
+            "function spkLabel(id){if(!HAS_SPK)return '';"
+            "var n=SHOW_NAME?spkInfo(id):null;"
+            "if(n&&n.name){return n.gender?n.name+'（'+n.gender+'）':n.name;}"
+            "var cmap=window.__cmap||{};var idx=(cmap[String(id)]!==undefined)?cmap[String(id)]:Number(id);"
+            "return '说话人'+(idx+1);}"
+            "function spkColor(id){var cmap=window.__cmap||{};var i=cmap[String(id)];"
+            "return (i===undefined)?colors[0]:colors[i %% colors.length];}"
+            "function esc(s){var d=document.createElement('div');d.textContent=s;return d.innerHTML;}"
+            "var _tt=null;function toast(m){var t=document.getElementById('toast');t.textContent=m;"
+            "t.style.display='block';if(_tt)clearTimeout(_tt);_tt=setTimeout(function(){t.style.display='none';},1600);}"
+            "function legacyCopy(t){var ta=document.createElement('textarea');ta.value=t;"
+            "ta.style.position='fixed';ta.style.opacity='0';document.body.appendChild(ta);ta.focus();ta.select();"
+            "try{document.execCommand('copy');}catch(e){}document.body.removeChild(ta);}"
+            "function copyText(t,ok){"
+            "if(navigator.clipboard&&navigator.clipboard.writeText){"
+            "navigator.clipboard.writeText(t).then(ok,function(){legacyCopy(t);ok();});}else{legacyCopy(t);ok();}}"
+            "function switchTab(n,el){var tabs=document.querySelectorAll('.tab');"
+            "for(var i=0;i<tabs.length;i++){tabs[i].classList.remove('active');}"
+            "el.classList.add('active');"
+            "document.getElementById('page0').style.display=(n===0)?'block':'none';"
+            "var p1=document.getElementById('page1');if(p1)p1.style.display=(n===1)?'block':'none';}"
+            "function render(){var arr=mand&&MAND?MAND:ORIG;var h='';"
+            "var cmap={};var ci=0;"
+            "for(var i=0;i<arr.length;i++){var sid=String(arr[i].speaker);"
+            "if(!(sid in cmap)){cmap[sid]=ci++;}}"
+            "window.__cmap=cmap;"
+            "for(var i=0;i<arr.length;i++){var s=arr[i];var lab=[];"
+            "var sl=spkLabel(s.speaker);if(sl)lab.push('<span class=\"'+spkColor(s.speaker)+'\">'+esc(sl)+'</span>');"
+            "if(HAS_TS)lab.push(esc(s.begin+' - '+s.end));"
+            "h+='<div class=\"seg\"'+(CAN_PLAY?' onclick=\"segClick(this)\"':'')+' data-a=\"'+s.begin_ms+'\" data-b=\"'+s.end_ms+'\">'+(lab.length?'<div class=\"label\">'+lab.join('   ')+'</div>':'')+'<div class=\"txt\">'+esc(s.text)+'</div></div>';}"
+            "document.getElementById('content').innerHTML=h;"
+            "document.getElementById('tg').textContent=mand?'查看原文':'查看普通话译文';"
+            "window.__cur=arr;}"
+            "function copyAll(){var arr=window.__cur||ORIG;var t='';"
+            "for(var i=0;i<arr.length;i++){var s=arr[i];var sl=spkLabel(s.speaker);"
+            "t+=(sl?'['+sl+']':'')+(HAS_TS?'['+s.begin+'-'+s.end+']':'')+s.text+'\\n';}"
+            "copyText(t,function(){toast('复制成功');});}"
+            "function copyAI(){var t='【AI 摘要】'+SUMMARY+'\\n';"
+            "if(TODOS&&TODOS.length){t+='\\n【待办事项】\\n';"
+            "for(var i=0;i<TODOS.length;i++){var d=TODOS[i];t+=(i+1)+'. '+d.task;"
+            "if(d.owner&&d.owner!=='未指定')t+='（'+d.owner+'）';"
+            "if(d.due&&d.due!=='未指定')t+=' ['+d.due+']';t+='\\n';}}"
+            "copyText(t,function(){toast('复制成功');});}"
+            "var audioEl=null,curSeg=null;"
+            "function segClick(el){var a=el.getAttribute('data-a'),b=el.getAttribute('data-b');"
+            "if(!audioEl){audioEl=new Audio();}"
+            "var A=audioEl;"
+            "if(curSeg===el){if(A.paused){A.play();}else{A.pause();}return;}"
+            "if(curSeg){curSeg.classList.remove('play');}"
+            "curSeg=el;el.classList.add('play');"
+            "A.src='/s/'+SID+'/item/'+ITEM+'/audio?a='+a+'&b='+b+'&pwd='+encodeURIComponent(PWD);"
+            "A.onended=function(){if(curSeg)curSeg.classList.remove('play');};"
+            "A.onerror=function(){var s=document.getElementById('audstat');if(s)s.textContent='本段音频无法回放（音频已过期或不存在）';};"
+            "A.play();}"
+            "document.getElementById('tg').onclick=function(){mand=!mand;render();};"
+            "render();</script>"
+            % (_FOLDER_BACK % (sid, sh["pwd"]),
+               html.escape(title), html.escape(meta_html),
+               ai_tab,
+               "inline-block" if has_mand else "none",
+               ('<div id="audstat" class="meta" style="margin-bottom:12px">'
+                '点击任意段落可回听对应原音</div>') if allow_play else "",
+               ai_page,
+               json.dumps(str(sh["pwd"])), sid, idx,
+               segs_js("segments"), segs_js("mandarin_segments"), names_js,
+               1 if opts.get("timestamps") else 0, 1 if opts.get("diarize") else 0,
+               1 if allow_play else 0, 1 if show_names else 0,
+               summary_js, todos_js))
+    return render_page(title, meta_html, body)
+
+
+@app.get("/s/<sid>/item/<int:idx>/audio")
+def folder_item_audio(sid, idx):
+    """资料夹条目的段落回听：从文件夹定位到对应任务音频后切片，鉴权走文件夹提取码。"""
+    if not re.fullmatch(r"[0-9a-f]{6,32}", sid):
+        return jsonify(error="not found"), 404
+    sh = load_share(sid)
+    if sh is None or sh.get("type") != "folder":
+        return jsonify(error="not found"), 404
+    if request.args.get("pwd", "").strip().upper() != str(sh["pwd"]).upper():
+        return jsonify(error="forbidden"), 403
+    if int(sh.get("max_opens") or 0) and int(sh.get("opens") or 0) > int(sh.get("max_opens")):
+        return jsonify(error="打开次数已用完"), 403
+    fd = load_folder(sh.get("folder_id") or "")
+    items = (fd or {}).get("items") or []
+    if not (0 <= idx < len(items)) or items[idx].get("kind") != "task":
+        return jsonify(error="not found"), 404
+    tid = str(items[idx]["ref"])
+    st = load_task(tid)
+    audio = DATA / (tid + ".audio")
+    if st is None or "result" not in st or not audio.exists():
+        return jsonify(error="音频已过期或不存在"), 404
+    try:
+        a = max(0, int(request.args.get("a", "0")))
+        b = int(request.args.get("b", "0"))
+    except ValueError:
+        return jsonify(error="参数错误"), 400
+    if b <= a:
+        return jsonify(error="参数错误"), 400
+    if b - a > MAX_SLICE_MS:
+        b = a + MAX_SLICE_MS
+    total_ms = int((st.get("result") or {}).get("duration_ms") or 0)
+    if total_ms and b > total_ms:
+        b = total_ms
+    if b <= a:
+        return jsonify(error="参数错误"), 400
+    try:
+        p = subprocess.run(["ffmpeg", "-hide_banner", "-loglevel", "error",
+                            "-ss", "%.3f" % (a / 1000.0), "-i", str(audio),
+                            "-t", "%.3f" % ((b - a) / 1000.0),
+                            "-vn", "-acodec", "libmp3lame", "-b:a", "48k",
+                            "-f", "mp3", "pipe:1"],
+                           capture_output=True, timeout=120)
+    except subprocess.TimeoutExpired:
+        return jsonify(error="音频切片超时"), 504
+    if p.returncode != 0 or not p.stdout:
+        return jsonify(error="音频切片失败"), 500
+    return Response(p.stdout, mimetype="audio/mpeg",
+                    headers={"Cache-Control": "private, max-age=86400",
+                             "Accept-Ranges": "none"})
+
+
+@app.get("/s/<sid>/folder.json")
+def folder_json(sid):
+    """Agent 阅读端点：文件夹内全部条目的结构化 JSON（转写全文/分段/摘要/待办、
+    聊天消息/真名/附件直链），一个提取码贯通全部内容。"""
+    if not re.fullmatch(r"[0-9a-f]{6,32}", sid):
+        return jsonify(error="not found"), 404
+    sh = load_share(sid)
+    if sh is None or sh.get("type") != "folder":
+        return jsonify(error="not found"), 404
+    if request.args.get("pwd", "").strip().upper() != str(sh["pwd"]).upper():
+        return jsonify(error="forbidden"), 403
+    fd = load_folder(sh.get("folder_id") or "")
+    if fd is None:
+        return jsonify(error="文件夹已被删除"), 404
+    root = request.host_url.replace("http://", "https://").rstrip("/")
+    out = []
+    for i, item in enumerate(fd.get("items") or []):
+        v = folder_entry_view(item)
+        if not v["alive"]:
+            out.append({"index": i, "kind": v.get("kind"), "ref": v.get("ref"),
+                        "error": v.get("error")})
+            continue
+        if v["kind"] == "task":
+            st = load_task(str(item["ref"]))
+            r = st["result"]
+            entry = {"index": i, "kind": "task", "ref": item["ref"],
+                     "title": v["title"],
+                     "created_at": st.get("created_at"),
+                     "duration_ms": r.get("duration_ms"),
+                     "options": st.get("options"),
+                     "text": r.get("text"),
+                     "segments": r.get("segments"),
+                     "summary": r.get("summary") or None,
+                     "todos": r.get("todos") or None,
+                     "audio_available": (DATA / (str(item["ref"]) + ".audio")).exists(),
+                     "item_audio": "%s/s/%s/item/%d/audio?pwd=%s" % (root, sid, i, sh["pwd"])}
+            if r.get("mandarin_segments"):
+                entry["mandarin_segments"] = r["mandarin_segments"]
+            names = {}
+            for k, nm in (r.get("speaker_names") or {}).items():
+                names[k] = {kk: vv for kk, vv in nm.items() if kk != "embedding"}
+            if names:
+                entry["speaker_names"] = names
+            out.append(entry)
+        else:
+            wsh = load_share(str(item["ref"]))
+            chat = json.loads(json.dumps(wsh["chat"], ensure_ascii=False))
+            wxchat_kick_ocr(str(item["ref"]))
+            names = load_wxnames(wsh.get("owner", ""))
+            realnames = chat.get("name_display")
+            if not isinstance(realnames, dict):
+                realnames = {n: names.get(n, n) for n in chat.get("participants") or []}
+            self_nick = names.get("__self__")
+            if self_nick and self_nick not in (chat.get("participants") or []):
+                self_nick = None
+            atts = wsh.get("attachments") or []
+            for m in chat.get("messages") or []:
+                m["realname"] = realnames.get(m.get("sender"), m.get("sender"))
+                m["is_self"] = bool(self_nick and m.get("sender") == self_nick)
+                att_i = m.get("att")
+                if isinstance(att_i, int) and 0 <= att_i < len(atts):
+                    a = atts[att_i]
+                    if "path" in a:
+                        m["file_url"] = "%s/s/%s/file/%d?pwd=%s" % (
+                            root, item["ref"], att_i, wsh["pwd"])
+                    if "ocr" in a:
+                        m["ocr_text"] = a["ocr"]
+            att_out = []
+            for ai2, a in enumerate(atts):
+                d = {"name": a.get("name"), "size": a.get("size"),
+                     "ocr_status": a.get("ocr_status", "none")}
+                if "path" in a:
+                    d["url"] = "%s/s/%s/file/%d?pwd=%s" % (root, item["ref"], ai2, wsh["pwd"])
+                if "ocr" in a:
+                    d["ocr"] = a["ocr"]
+                att_out.append(d)
+            entry = {"index": i, "kind": "wxchat", "ref": item["ref"],
+                     "title": chat.get("title") or v["title"],
+                     "source": chat.get("source", "wechat"),
+                     "participants": chat.get("participants"),
+                     "realnames": realnames, "self_nickname": self_nick,
+                     "message_count": chat.get("message_count"),
+                     "time_start": chat.get("time_start"),
+                     "time_end": chat.get("time_end"),
+                     "messages": chat.get("messages"),
+                     "attachments": att_out,
+                     "expires_at": wsh.get("expires_at")}
+            out.append(entry)
+    return jsonify(type="folder", title=fd.get("name"), share_id=sid,
+                   created_at=sh.get("created_at"), expires_at=sh.get("expires_at"),
+                   item_count=len(out), items=out)
 
 
 def _human_size(n):

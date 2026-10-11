@@ -56,6 +56,28 @@
   写入 funasr-svc config 的 `spk_centroid_dist` 并重启服务，再跑一轮生产验证收口。
 - **回滚**：备份的 app.py 覆盖回 + restart 即可；config 删掉 `funasr_url` 亦可单独关闭分流。
 
+## 资料夹（文件夹分组 + 聚合分享，v1.15.0+ 已部署上线）
+
+- **存储**：`data/<fid>.folder.json`（`{"folder_id","name","owner","created_at","items":[{"kind","ref","added_at"}]}`）。
+  成员只存引用：`kind=task` 指向转写任务、`kind=wxchat` 指向聊天分享；本体被删除/过期后条目
+  自动显示「已失效」（`folder_entry_view` 统一产出视图）。每用户 100 夹、单夹 50 条上限。
+- **管理接口**（X-LZ-Token）：
+  - `GET/POST /api/asr/folders`（列表 / 新建 `{"name":...}`）
+  - `GET/DELETE /api/asr/folders/<fid>`（详情带 entries / 删除，不删成员本体）
+  - `POST /api/asr/folders/<fid>/rename`（改名）、`POST .../items`（加入 `{"kind","ref"}`，幂等去重）、
+    `POST .../items/remove`（移出）、`POST .../share`（生成聚合分享，form: validity_hours/max_opens）
+- **分享页**（`type:"folder"` 的 share）：
+  - `/s/<sid>` 目录页（条目卡片清单，打开计数在此完成）
+  - `/s/<sid>/item/<idx>` 条目页：task → 转写视图（双标签/回听/译文，与单条分享页同构）；
+    wxchat → 复用原分享的气泡流渲染（页内 Agent 入口改指 folder.json，附件走原分享端点）
+  - `/s/<sid>/item/<idx>/audio` 录音段落回听切片（文件夹提取码鉴权）
+  - `/s/<sid>/folder.json?pwd=` **Agent 端点**：整夹结构化 JSON（录音：text/segments/speaker_names/
+    summary/todos/音频直链；聊天：messages 逐条 realname/is_self/file_url/ocr_text + attachments 直链）
+- **约束**：文件夹分享链接与录音条目受分享寿命（1h~60天）约束；聊天条目受原分享 30 天寿命约束；
+  过期分享清理沿用 `purge_expired_audio`（`*.folder.json` 不走该清理，永久保留直至手动删除）。
+- **部署留痕**：本地 `server/asrsvc/app.py` 与服务器一致（改动前备份 `/opt/asrsvc/app.py.bak-folder-20261011`）；
+  APP 侧 v1.15.0/47 已装机（设置页两页签入口行 + FolderActivity）。
+
 ## 部署状态（2026-09-29 已上线）
 
 - **已部署**：生产 asrsvc 已切 v3 分流版（备份 `/root/asrsvc-app-backup-20260929.py`；

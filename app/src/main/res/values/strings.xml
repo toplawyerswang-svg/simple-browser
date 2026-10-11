@@ -76,7 +76,7 @@
     <!-- 聊天记录分享管理（设置页标签） -->
     <string name="wxchat_manage_title">聊天记录分享</string>
     <string name="wxchat_manage_auth_hint">管理微信聊天记录的转存分享，需要先完成访问令牌核验：请切换到「音视频识别」标签输入令牌。</string>
-    <string name="wxchat_manage_hint">点击条目打开分享页；「链接」复制分享链接（含提取码）；「改名」重命名记录；长按删除分享，服务器上的附件一并删除。</string>
+    <string name="wxchat_manage_hint">点击条目打开分享页；「链接」复制分享链接（含提取码）；「改名」重命名记录；长按可预览、复制、移入文件夹或删除（删除连服务器附件一并删）。</string>
     <string name="wxchat_manage_empty">暂无聊天记录分享。在微信里把合并转发的聊天记录分享给轻舟浏览器即可转存。</string>
     <string name="wxchat_item_meta">%1$d 条消息 · %2$d 个附件 · 有效期至 %3$s（剩 %4$d 天）</string>
     <string name="wxchat_item_copy">链接</string>
@@ -172,7 +172,7 @@
     <string name="settings_tab_other">其他设置</string>
     <string name="asr_manage_title">音视频识别</string>
     <string name="asr_manage_entry">管理上传的录音与转写结果 ›</string>
-    <string name="asr_manage_play_hint">点击条目查看转写详情；点「播放」收听录音；长按删除。</string>
+    <string name="asr_manage_play_hint">点击条目查看转写详情；点「播放」收听录音；长按可打开、移入文件夹或删除。</string>
     <string name="asr_manage_play">播放</string>
     <string name="asr_tab_result">识别结果</string>
     <string name="asr_tab_ai">AI 摘要 · 待办</string>
@@ -369,4 +369,41 @@
     <string name="http_auth_password_hint">密码</string>
     <string name="http_auth_remember">记住密码</string>
     <string name="http_auth_login">登录</string>
+
+    <!-- 资料夹：录音转写与聊天记录的跨类分组与聚合分享 -->
+    <string name="folder_title">资料夹</string>
+    <string name="folder_new">＋ 新建</string>
+    <string name="folder_share_btn">分享</string>
+    <string name="folder_more">更多操作</string>
+    <string name="folder_manage_back">返回</string>
+    <string name="folder_entry_desc">资料夹：把多个录音和聊天记录归成一组，整体分享</string>
+    <string name="folder_create_title">新建文件夹</string>
+    <string name="folder_rename_title">重命名文件夹</string>
+    <string name="folder_delete_title">删除文件夹</string>
+    <string name="folder_delete_confirm">删除文件夹「%1$s」？\n文件夹内的录音与聊天记录不会被删除。</string>
+    <string name="folder_name_hint">文件夹名称（如：张某借款纠纷材料）</string>
+    <string name="folder_created">已创建文件夹</string>
+    <string name="folder_renamed">已重命名</string>
+    <string name="folder_deleted">文件夹已删除（录音与聊天记录不受影响）</string>
+    <string name="folder_item_count">%1$d 个条目</string>
+    <string name="folder_list_empty">还没有文件夹\n\n在「音视频识别」或「聊天记录分享」列表\n长按记录即可移入文件夹</string>
+    <string name="folder_detail_empty">文件夹为空\n\n去两个列表长按记录移入</string>
+    <string name="folder_open">打开</string>
+    <string name="folder_item_dead">条目已失效</string>
+    <string name="folder_add_action">移入文件夹</string>
+    <string name="folder_add_to">移入文件夹（%1$s）</string>
+    <string name="folder_new_and_add">＋ 新建文件夹</string>
+    <string name="folder_added">已移入「%1$s」</string>
+    <string name="folder_remove_title">移出文件夹</string>
+    <string name="folder_remove_confirm">把「%1$s」移出该文件夹？\n记录本身不会被删除。</string>
+    <string name="folder_removed">已移出文件夹</string>
+    <string name="folder_share_title">分享文件夹</string>
+    <string name="folder_share_options_msg">接收方打开链接先看到条目目录，点开逐条查看；一个提取码贯通全部内容。文件夹内的聊天记录条目最长保留 30 天。</string>
+    <string name="folder_share_ttl">有效期</string>
+    <string name="folder_share_opens">可打开次数</string>
+    <string name="folder_share_done_title">文件夹分享链接</string>
+    <string name="folder_share_msg">链接：%1$s\n提取码：%2$s</string>
+    <string name="folder_share_text">【轻舟浏览器】资料夹「%1$s」\n提取码：%3$s\n%2$s</string>
+    <string name="folder_empty_share">文件夹为空或条目均已失效，无法分享</string>
+    <string name="wxchat_item_open">预览</string>
 </resources>

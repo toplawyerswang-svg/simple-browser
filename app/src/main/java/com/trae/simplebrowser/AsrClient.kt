@@ -429,6 +429,192 @@ object AsrClient {
         checkCode(code, body)
     }
 
+    // ------------------------------------------------------------ 资料夹（录音+聊天记录跨类分组）
+
+    data class FolderInfo(
+        val folderId: String,
+        val name: String,
+        val itemCount: Int,
+        val aliveCount: Int,
+        val createdAt: Long
+    )
+
+    /** 文件夹成员：kind=task（录音转写）/ wxchat（聊天记录分享）；失效条目 alive=false。
+     *  wxchat 条目附带 url（带提取码的分享链接，供点开预览），task 条目为空串。 */
+    data class FolderEntry(
+        val index: Int,
+        val kind: String,
+        val ref: String,
+        val title: String,
+        val meta: String,
+        val alive: Boolean,
+        val error: String?,
+        val url: String
+    )
+
+    data class FolderDetail(val folderId: String, val name: String, val entries: List<FolderEntry>)
+
+    private fun parseFolder(j: JSONObject): FolderInfo = FolderInfo(
+        folderId = j.optString("folder_id"),
+        name = j.optString("name", "未命名文件夹"),
+        itemCount = j.optInt("item_count", 0),
+        aliveCount = j.optInt("alive_count", 0),
+        createdAt = j.optLong("created_at", 0L)
+    )
+
+    /** 我的文件夹列表。 */
+    fun listFolders(context: Context): List<FolderInfo> {
+        val conn = connection(context, "$BASE_URL/folders")
+        val code = conn.responseCode
+        val body = readBody(conn, code)
+        checkCode(code, body)
+        val arr = JSONObject(body).optJSONArray("folders") ?: return emptyList()
+        return (0 until arr.length()).mapNotNull { arr.optJSONObject(it)?.let(::parseFolder) }
+    }
+
+    /** 新建文件夹，返回 folder_id。 */
+    fun createFolder(context: Context, name: String): String {
+        val conn = (URL("$BASE_URL/folders").openConnection() as HttpURLConnection).apply {
+            requestMethod = "POST"
+            connectTimeout = 15000
+            readTimeout = 20000
+            doOutput = true
+            setRequestProperty("X-LZ-Token", token(context))
+            setRequestProperty("Content-Type", "application/json")
+        }
+        conn.outputStream.use {
+            it.write(JSONObject().put("name", name).toString().toByteArray(Charsets.UTF_8))
+        }
+        val code = conn.responseCode
+        val body = readBody(conn, code)
+        checkCode(code, body)
+        return JSONObject(body).getString("folder_id")
+    }
+
+    /** 文件夹详情（含成员明细）。 */
+    fun folderDetail(context: Context, folderId: String): FolderDetail {
+        val conn = connection(context, "$BASE_URL/folders/$folderId")
+        val code = conn.responseCode
+        val body = readBody(conn, code)
+        checkCode(code, body)
+        val j = JSONObject(body)
+        val arr = j.optJSONArray("entries")
+        val entries = ArrayList<FolderEntry>()
+        if (arr != null) {
+            for (i in 0 until arr.length()) {
+                val o = arr.optJSONObject(i) ?: continue
+                entries.add(FolderEntry(
+                    index = o.optInt("index"),
+                    kind = o.optString("kind"),
+                    ref = o.optString("ref"),
+                    title = o.optString("title", "未命名"),
+                    meta = o.optString("meta"),
+                    alive = o.optBoolean("alive", false),
+                    error = o.optString("error").ifEmpty { null },
+                    url = o.optString("url")
+                ))
+            }
+        }
+        return FolderDetail(
+            folderId = j.optString("folder_id"),
+            name = j.optString("name", "未命名文件夹"),
+            entries = entries
+        )
+    }
+
+    /** 重命名文件夹（已生成分享的标题同步生效）。 */
+    fun renameFolder(context: Context, folderId: String, name: String) {
+        val conn = (URL("$BASE_URL/folders/$folderId/rename").openConnection() as HttpURLConnection).apply {
+            requestMethod = "POST"
+            connectTimeout = 15000
+            readTimeout = 20000
+            doOutput = true
+            setRequestProperty("X-LZ-Token", token(context))
+            setRequestProperty("Content-Type", "application/json")
+        }
+        conn.outputStream.use {
+            it.write(JSONObject().put("name", name).toString().toByteArray(Charsets.UTF_8))
+        }
+        val code = conn.responseCode
+        val body = readBody(conn, code)
+        checkCode(code, body)
+    }
+
+    /** 删除文件夹（成员本体不受影响）。 */
+    fun deleteFolder(context: Context, folderId: String) {
+        val conn = (URL("$BASE_URL/folders/$folderId").openConnection() as HttpURLConnection).apply {
+            requestMethod = "DELETE"
+            connectTimeout = 15000
+            readTimeout = 20000
+            setRequestProperty("X-LZ-Token", token(context))
+        }
+        val code = conn.responseCode
+        val body = readBody(conn, code)
+        checkCode(code, body)
+    }
+
+    /** 把录音转写任务（kind=task）或聊天记录分享（kind=wxchat）加入文件夹。 */
+    fun folderAddItem(context: Context, folderId: String, kind: String, ref: String) {
+        val conn = (URL("$BASE_URL/folders/$folderId/items").openConnection() as HttpURLConnection).apply {
+            requestMethod = "POST"
+            connectTimeout = 15000
+            readTimeout = 20000
+            doOutput = true
+            setRequestProperty("X-LZ-Token", token(context))
+            setRequestProperty("Content-Type", "application/json")
+        }
+        conn.outputStream.use {
+            it.write(JSONObject().put("kind", kind).put("ref", ref).toString().toByteArray(Charsets.UTF_8))
+        }
+        val code = conn.responseCode
+        val body = readBody(conn, code)
+        checkCode(code, body)
+    }
+
+    /** 把条目移出文件夹（不删除成员本体）。 */
+    fun folderRemoveItem(context: Context, folderId: String, kind: String, ref: String) {
+        val conn = (URL("$BASE_URL/folders/$folderId/items/remove").openConnection() as HttpURLConnection).apply {
+            requestMethod = "POST"
+            connectTimeout = 15000
+            readTimeout = 20000
+            doOutput = true
+            setRequestProperty("X-LZ-Token", token(context))
+            setRequestProperty("Content-Type", "application/json")
+        }
+        conn.outputStream.use {
+            it.write(JSONObject().put("kind", kind).put("ref", ref).toString().toByteArray(Charsets.UTF_8))
+        }
+        val code = conn.responseCode
+        val body = readBody(conn, code)
+        checkCode(code, body)
+    }
+
+    /** 为文件夹生成聚合分享链接（目录+逐条查看，接收方一个提取码贯通全部内容）。 */
+    fun createFolderShare(context: Context, folderId: String, validityHours: Int, maxOpens: Int): ShareInfo {
+        val conn = (URL("$BASE_URL/folders/$folderId/share").openConnection() as HttpURLConnection).apply {
+            requestMethod = "POST"
+            connectTimeout = 15000
+            readTimeout = 20000
+            doOutput = true
+            setRequestProperty("X-LZ-Token", token(context))
+            setRequestProperty("Content-Type", "application/x-www-form-urlencoded")
+        }
+        conn.outputStream.use {
+            it.write("validity_hours=$validityHours&max_opens=$maxOpens".toByteArray(Charsets.UTF_8))
+        }
+        val code = conn.responseCode
+        val body = readBody(conn, code)
+        checkCode(code, body)
+        val j = JSONObject(body)
+        return ShareInfo(
+            shareId = j.getString("share_id"),
+            pwd = j.getString("pwd"),
+            url = j.getString("url"),
+            validityHours = j.optInt("validity_hours", validityHours),
+            maxOpens = j.optInt("max_opens", maxOpens)
+        )
+    }
+
     // ------------------------------------------------------------ 内部
 
     private fun token(context: Context): String = AppPrefs.getAsrToken(context)

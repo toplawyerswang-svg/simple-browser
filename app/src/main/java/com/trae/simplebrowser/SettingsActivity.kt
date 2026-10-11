@@ -469,8 +469,25 @@ class SettingsActivity : AppCompatActivity() {
         asrListView.adapter = taskAdapter
         asrListView.setOnItemClickListener { _, _, position, _ -> openTask(items[position]) }
         asrListView.setOnItemLongClickListener { _, _, position, _ ->
-            confirmDelete(items[position])
+            val item = items[position]
+            AlertDialog.Builder(this)
+                .setTitle(item.name)
+                .setItems(arrayOf(
+                    getString(R.string.asr_item_result),
+                    getString(R.string.folder_add_action),
+                    getString(R.string.asr_delete_ok))) { _, which ->
+                    when (which) {
+                        0 -> openTask(item)
+                        1 -> showAddToFolderDialog("task", item.id, item.name)
+                        2 -> confirmDelete(item)
+                    }
+                }
+                .setNegativeButton(android.R.string.cancel, null)
+                .show()
             true
+        }
+        binding.asrFolderEntry.setOnClickListener {
+            startActivity(Intent(this, FolderActivity::class.java))
         }
 
         binding.asrTokenVerifyBtn.setOnClickListener {
@@ -600,12 +617,108 @@ class SettingsActivity : AppCompatActivity() {
         wxListView.adapter = wxAdapter
         wxListView.setOnItemClickListener { _, _, position, _ -> openWxShare(wxShares[position]) }
         wxListView.setOnItemLongClickListener { _, _, position, _ ->
-            confirmDeleteWxShare(wxShares[position])
+            val item = wxShares[position]
+            AlertDialog.Builder(this)
+                .setTitle(item.title)
+                .setItems(arrayOf(
+                    getString(R.string.wxchat_item_open),
+                    getString(R.string.wxchat_item_copy),
+                    getString(R.string.folder_add_action),
+                    getString(R.string.asr_delete_ok))) { _, which ->                    when (which) {
+                        0 -> openWxShare(item)
+                        1 -> copyWxLink(item)
+                        2 -> showAddToFolderDialog("wxchat", item.shareId, item.title)
+                        3 -> confirmDeleteWxShare(item)
+                    }
+                }
+                .setNegativeButton(android.R.string.cancel, null)
+                .show()
             true
+        }
+        binding.wxchatFolderEntry.setOnClickListener {
+            startActivity(Intent(this, FolderActivity::class.java))
         }
 
         binding.wxchatRefresh.setOnClickListener { loadWxShares() }
         binding.wxchatNamesBtn.setOnClickListener { showNameMappingDialog() }
+    }
+
+    // ---------- 资料夹：移入对话框（新建或选已有，录音与聊天记录共用一套文件夹）
+
+    /** 长按记录 →「移入文件夹」：列出已有文件夹 + 新建项，选中即移入。 */
+    private fun showAddToFolderDialog(kind: String, ref: String, title: String) {
+        Thread {
+            try {
+                val list = AsrClient.listFolders(this)
+                runOnUiThread {
+                    if (isFinishing || isDestroyed) return@runOnUiThread
+                    val options = mutableListOf(getString(R.string.folder_new_and_add))
+                    list.forEach { options.add(it.name) }
+                    AlertDialog.Builder(this)
+                        .setTitle(getString(R.string.folder_add_to, title))
+                        .setItems(options.toTypedArray()) { _, which ->
+                            if (which == 0) {
+                                promptNewFolderAndAdd(kind, ref)
+                            } else {
+                                val f = list[which - 1]
+                                addToFolder(f.folderId, f.name, kind, ref)
+                            }
+                        }
+                        .setNegativeButton(android.R.string.cancel, null)
+                        .show()
+                }
+            } catch (e: Exception) {
+                runOnUiThread {
+                    if (!isFinishing && !isDestroyed) Toast.makeText(this, asrErrorText(e), Toast.LENGTH_LONG).show()
+                }
+            }
+        }.start()
+    }
+
+    private fun promptNewFolderAndAdd(kind: String, ref: String) {
+        val input = EditText(this).apply {
+            hint = getString(R.string.folder_name_hint)
+            setSingleLine(true)
+        }
+        AlertDialog.Builder(this)
+            .setTitle(R.string.folder_create_title)
+            .setView(input)
+            .setNegativeButton(android.R.string.cancel, null)
+            .setPositiveButton(android.R.string.ok) { _, _ ->
+                val name = input.text.toString().trim()
+                if (name.isEmpty()) return@setPositiveButton
+                Thread {
+                    try {
+                        val fid = AsrClient.createFolder(this, name)
+                        runOnUiThread {
+                            if (isFinishing || isDestroyed) return@runOnUiThread
+                            addToFolder(fid, name, kind, ref)
+                        }
+                    } catch (e: Exception) {
+                        runOnUiThread {
+                            if (!isFinishing && !isDestroyed) Toast.makeText(this, asrErrorText(e), Toast.LENGTH_LONG).show()
+                        }
+                    }
+                }.start()
+            }
+            .show()
+    }
+
+    private fun addToFolder(folderId: String, folderName: String, kind: String, ref: String) {
+        Thread {
+            try {
+                AsrClient.folderAddItem(this, folderId, kind, ref)
+                runOnUiThread {
+                    if (isFinishing || isDestroyed) return@runOnUiThread
+                    Toast.makeText(this, getString(R.string.folder_added, folderName),
+                        Toast.LENGTH_SHORT).show()
+                }
+            } catch (e: Exception) {
+                runOnUiThread {
+                    if (!isFinishing && !isDestroyed) Toast.makeText(this, asrErrorText(e), Toast.LENGTH_LONG).show()
+                }
+            }
+        }.start()
     }
 
     /** 昵称→真名管理：列出历史分享中出现过的微信昵称，逐个设置真名（参考音视频说话人标注）。 */
