@@ -62,11 +62,14 @@
   成员只存引用：`kind=task` 指向转写任务、`kind=wxchat` 指向聊天分享；本体被删除/过期后条目
   自动显示「已失效」（`folder_entry_view` 统一产出视图）。每用户 100 夹、单夹 50 条上限。
 - **管理接口**（X-LZ-Token）：
-  - `GET/POST /api/asr/folders`（列表 / 新建 `{"name":...}`）
+  - `GET/POST /api/asr/folders`（列表 / 新建 `{"name":...}`；列表每夹带 items 明细，APP 据此把已归档条目从根目录隐藏）
   - `GET/DELETE /api/asr/folders/<fid>`（详情带 entries / 删除，不删成员本体）
   - `POST /api/asr/folders/<fid>/rename`（改名）、`POST .../items`（加入 `{"kind","ref"}`，幂等去重）、
     `POST .../items/batch`（批量加入 `{"items":[{kind,ref},...]}` → `{added,skipped,failed}`，列表多选与夹内添加共用）、
     `POST .../items/remove`（移出）、`POST .../share`（生成聚合分享，form: validity_hours/max_opens）
+- **唯一归属（move 语义，2026-10-12）**：一条记录最多归属一个文件夹——单条/批量加入前先
+  `_detach_from_other_folders` 从该用户其他夹移出（响应 moved_from / moved_from_others）。
+  部署前的旧双重归属数据不自动收敛，下次移动时自动收敛。
 - **分享页**（`type:"folder"` 的 share）：
   - `/s/<sid>` 目录页（条目卡片清单，打开计数在此完成）
   - `/s/<sid>/item/<idx>` 条目页：task → 转写视图（双标签/回听/译文，与单条分享页同构）；

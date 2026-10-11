@@ -9,7 +9,7 @@
 | 应用名称                      | 轻舟浏览器                                             |
 | applicationId             | `com.trae.lightboat`                              |
 | namespace（Java 包名）        | `com.trae.simplebrowser`                          |
-| versionCode / versionName | 48 / 1.15.1                                       |
+| versionCode / versionName | 50 / 1.15.3                                       |
 | minSdk / targetSdk        | 24 / 34                                           |
 | 旧版共存说明                    | 旧应用"极简浏览器"（`com.trae.simplebrowser`）仍可同机安装，二者互不覆盖 |
 
@@ -459,3 +459,18 @@
 | 关联代码 | SettingsActivity（asrSelectMode/asrSelected、wxSelectMode/wxSelected、enter/exit/render/toggle×2、showBatchAddDialog/promptNewFolderAndAddBatch/addBatchToFolder）、asr_task_item.xml/wx_share_item.xml（item_check 复选框）、activity_settings.xml（asr/wxchat_selection_bar）、FolderActivity（showAddItemsPicker/showPickDialog/addPickedItems/PickRow）、folder_pick_item.xml、AsrClient.folderAddItems、strings 18 条                                                        |
 | 验证    | 服务端 curl：批量加入（1 有效+1 不存在+1 重复）→ added=1/failed=1/skipped=1 ✓；重复再加全 skipped ✓；空 items 400 ✓；真机（华为 FCP-AN10）：列表多选 2 条→移入 case-zhang→服务器 +2 ✓、选择栏自动退出 ✓；夹内「＋添加」→面板正确过滤（处理中/已在夹的不出现）→勾 1 条聊天记录→服务器 +1、详情即时刷新 ✓；多选态按 BACK 退出且不离开页面 ✓                                        |
 | 已知边界 | 挑选面板的聊天记录条目受原分享 30 天寿命约束（失效后不再出现在面板）；批量加入时夹满/成员失效的条目在 toast 中提示「N 条失败」，不影响其余条目                                                                                                                            |
+
+
+### F-35 资料夹模型改造：唯一归属（move 语义）+ 根目录 + 分享参数记忆
+
+| 项目    | 内容                                                                                                                                                                                                                              |
+| ----- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 需求    | ① 每条录音摘录/聊天记录最多移入 1 个资料夹；② 已归档条目不再展示在「根目录」（两个列表即根目录）；③ 分享时选择的「有效期/可打开次数」记住，下次作为默认值（v1.15.2 引入，本批一并验证）                                                                                  |
+| 唯一归属 | 服务端 move 语义：`_detach_from_other_folders`——单条加入与批量加入时先把条目从该用户其他文件夹移出再入新夹（响应带 moved_from/moved_from_others）；一条记录任一时刻只归属一个夹。旧数据（部署前的双重归属）不自动收敛，下次移动时自动收敛                                                          |
+| 根目录  | `GET /api/asr/folders` 每个 folder 携带 items 明细（kind+ref）→ APP 构建归档索引，两个列表（音视频识别/聊天记录分享）只显示未归档条目；入口行动态计数「资料夹：N 个文件夹 · 已归入 M 条」；全部归档时空态文案引导去资料夹查看；移出文件夹后条目回到根目录；移入成功后立即刷新对应列表（条目当场消失）  |
+| 挑选面板 | 夹内「＋添加」改为只列**根目录条目**（未归入任何夹的），已归档条目（含本夹）不再出现——面板天然满足唯一归属                                                                                                                              |
+| 分享记忆 | AppPrefs 新增 share_validity_hours/share_max_opens（全局，录音分享要求页与文件夹分享弹窗共用）：生成时保存所选参数，下次打开各自界面默认上次的值；首次回落产品默认 24h/5次                                                                                              |
+| 缺陷修复 | ① onResume 刷新可见页签列表（从资料夹页移出后回设置页，根目录立即反映）；② refreshFolderIndex 后台线程直接更新 TextView（跨线程 UI）造成 tasks 请求延迟 69s——包进 runOnUiThread 修复                                                                                   |
+| 关联代码 | server/asrsvc/app.py（_detach_from_other_folders、folder_add_item/items/batch move 语义、folder_list 带 items）；SettingsActivity（refreshFolderIndex/filedTaskRefs/filedWxRefs、loadTasks/loadWxShares 过滤、onResume、addToFolder/addBatchToFolder 刷新）；FolderActivity.showAddItemsPicker；AsrShareOptionsActivity；AppPrefs（share_*）；AsrClient.FolderInfo.items                                                                                     |
+| 验证    | 服务端 curl：加 A→move 到 B（A 归零 B 收下、moved_from_others=1）✓；真机：根目录只显示未归档（录音 8 条、聊天 5 条，已归档的消失）✓、入口行计数 ✓、移出 case-zhang 后条目回根目录（经 onResume 刷新）✓；分享参数：生成用 7天/10次 → 重开弹窗默认 7天/10次 ✓；兼容：Spinner 记忆对录音分享要求页与文件夹弹窗同时生效（同一 AppPrefs）                                                                 |
+| 已知边界 | move 语义上线的旧双重归属数据不自动收敛（如「微信-上海象屿符光宇」同时在 pc 和 case-zhang）：两处都显示、根目录不显示；用户从任一夹移出/下次移动时自动收敛，或手动清理                                                                                                          |

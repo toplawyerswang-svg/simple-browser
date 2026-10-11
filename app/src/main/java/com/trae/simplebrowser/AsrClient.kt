@@ -436,7 +436,9 @@ object AsrClient {
         val name: String,
         val itemCount: Int,
         val aliveCount: Int,
-        val createdAt: Long
+        val createdAt: Long,
+        /** 成员明细（kind to ref）：APP 据此把已归档条目从根目录列表隐藏、挑选面板只列未归档。 */
+        val items: List<Pair<String, String>> = emptyList()
     )
 
     /** 文件夹成员：kind=task（录音转写）/ wxchat（聊天记录分享）；失效条目 alive=false。
@@ -454,13 +456,26 @@ object AsrClient {
 
     data class FolderDetail(val folderId: String, val name: String, val entries: List<FolderEntry>)
 
-    private fun parseFolder(j: JSONObject): FolderInfo = FolderInfo(
-        folderId = j.optString("folder_id"),
-        name = j.optString("name", "未命名文件夹"),
-        itemCount = j.optInt("item_count", 0),
-        aliveCount = j.optInt("alive_count", 0),
-        createdAt = j.optLong("created_at", 0L)
-    )
+    private fun parseFolder(j: JSONObject): FolderInfo {
+        val itemArr = j.optJSONArray("items")
+        val members = ArrayList<Pair<String, String>>()
+        if (itemArr != null) {
+            for (i in 0 until itemArr.length()) {
+                val o = itemArr.optJSONObject(i) ?: continue
+                val kind = o.optString("kind")
+                val ref = o.optString("ref")
+                if (kind.isNotEmpty() && ref.isNotEmpty()) members.add(kind to ref)
+            }
+        }
+        return FolderInfo(
+            folderId = j.optString("folder_id"),
+            name = j.optString("name", "未命名文件夹"),
+            itemCount = j.optInt("item_count", 0),
+            aliveCount = j.optInt("alive_count", 0),
+            createdAt = j.optLong("created_at", 0L),
+            items = members
+        )
+    }
 
     /** 我的文件夹列表。 */
     fun listFolders(context: Context): List<FolderInfo> {

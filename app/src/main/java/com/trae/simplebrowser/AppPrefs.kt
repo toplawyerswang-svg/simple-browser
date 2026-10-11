@@ -26,6 +26,8 @@ object AppPrefs {
     private const val KEY_TEXT_ZOOM = "text_zoom"
     private const val KEY_PENDING_CLEAR_CACHE = "pending_clear_cache"
     private const val KEY_LOGIN_HINT_DISABLED_HOSTS = "login_hint_disabled_hosts"
+    private const val KEY_SHARE_VALIDITY_HOURS = "share_validity_hours"
+    private const val KEY_SHARE_MAX_OPENS = "share_max_opens"
 
     /** 已创建的身份数量（含身份1）；默认 1，即升级用户保持原单身份行为 */
     fun getIdentityCount(context: Context): Int {
@@ -78,6 +80,26 @@ object AppPrefs {
             .edit()
             .remove(KEY_ASR_TOKEN)
             .remove(KEY_ASR_USER)
+            .apply()
+    }
+
+    /** 上次分享选择的有效期（小时）/可打开次数（0=不限）：录音分享与文件夹分享共用，
+     *  下次打开分享设置时作为默认值。首次使用回落到产品默认 24 小时 / 5 次。 */
+    fun getShareValidityHours(context: Context): Int {
+        return context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+            .getInt(KEY_SHARE_VALIDITY_HOURS, 24)
+    }
+
+    fun getShareMaxOpens(context: Context): Int {
+        return context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+            .getInt(KEY_SHARE_MAX_OPENS, 5)
+    }
+
+    fun setShareDefaults(context: Context, validityHours: Int, maxOpens: Int) {
+        context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+            .edit()
+            .putInt(KEY_SHARE_VALIDITY_HOURS, validityHours)
+            .putInt(KEY_SHARE_MAX_OPENS, maxOpens)
             .apply()
     }
 

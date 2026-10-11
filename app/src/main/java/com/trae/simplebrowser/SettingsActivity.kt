@@ -93,6 +93,13 @@ class SettingsActivity : AppCompatActivity() {
     private var asrSelectMode = false
     private val asrSelected = LinkedHashSet<String>()   // 选中的 task_id
 
+    // ---------- 资料夹：根目录模型 ----------
+    // 根目录 = 未归入任何资料夹的条目。已归档条目从两个列表隐藏，只在资料夹里出现；
+    // 服务端 move 语义保证一条记录最多归属一个夹。
+    private var filedTaskRefs = setOf<String>()
+    private var filedWxRefs = setOf<String>()
+    private var folderCount = 0
+
     // ---------- 聊天记录分享管理状态 ----------
     private data class WxShareItem(
         val shareId: String,
@@ -150,6 +157,11 @@ class SettingsActivity : AppCompatActivity() {
     override fun onResume() {
         super.onResume()
         refreshAdBlockStatus()
+        // 从资料夹页返回时刷新可见页签：夹内移出/添加都会改变根目录内容
+        when (binding.settingsTabs.selectedTabPosition) {
+            2 -> if (AsrAuth.hasToken(this)) loadTasks()
+            3 -> if (AsrAuth.hasToken(this)) loadWxShares()
+        }
     }
 
     // ---------- 搜索/主页/浏览体验/隐私（F-15） ----------
@@ -840,6 +852,9 @@ class SettingsActivity : AppCompatActivity() {
                     Toast.makeText(this, msg, Toast.LENGTH_LONG).show()
                     exitAsrSelection()
                     exitWxSelection()
+                    // move 语义：归档后条目离开根目录，刷新两个列表（按参与 kinds 刷新）
+                    if (payload.any { it.first == "task" }) loadTasks()
+                    if (payload.any { it.first == "wxchat" }) loadWxShares()
                 }
             } catch (e: Exception) {
                 runOnUiThread {
@@ -918,6 +933,8 @@ class SettingsActivity : AppCompatActivity() {
                     if (isFinishing || isDestroyed) return@runOnUiThread
                     Toast.makeText(this, getString(R.string.folder_added, folderName),
                         Toast.LENGTH_SHORT).show()
+                    // move 语义：归档后条目离开根目录，刷新对应列表让它消失
+                    if (kind == "task") loadTasks() else loadWxShares()
                 }
             } catch (e: Exception) {
                 runOnUiThread {
@@ -1034,10 +1051,14 @@ class SettingsActivity : AppCompatActivity() {
         }
         Thread {
             try {
+                // 先刷新归档索引：根目录只显示未归入资料夹的条目
+                val filed = refreshFolderIndex().second
                 val arr = AsrClient.listWxChatShares(this)
                 val parsed = ArrayList<WxShareItem>(arr.length())
                 for (i in 0 until arr.length()) {
                     val o = arr.optJSONObject(i) ?: continue
+                    val sid = o.optString("share_id")
+                    if (sid in filed) continue  // 已归档：不出现在根目录
                     val disp = ArrayList<String>()
                     val pArr = o.optJSONArray("participants_display")
                     if (pArr != null) {
@@ -1049,7 +1070,7 @@ class SettingsActivity : AppCompatActivity() {
                     if (disp.isEmpty()) disp.add(o.optString("title", "聊天记录"))
                     parsed.add(
                         WxShareItem(
-                            shareId = o.optString("share_id"),
+                            shareId = sid,
                             pwd = o.optString("pwd"),
                             title = o.optString("title", "聊天记录"),
                             messageCount = o.optInt("message_count", 0),
@@ -1075,6 +1096,8 @@ class SettingsActivity : AppCompatActivity() {
                     }
                     wxAdapter.notifyDataSetChanged()
                     wxListView.visibility = if (wxShares.isEmpty()) View.GONE else View.VISIBLE
+                    wxEmptyView.text = if (wxShares.isEmpty() && filedWxRefs.isNotEmpty())
+                        getString(R.string.wxchat_all_filed) else getString(R.string.wxchat_manage_empty)
                     wxEmptyView.visibility = if (wxShares.isEmpty()) View.VISIBLE else View.GONE
                 }
             } catch (e: AsrAuthException) {
@@ -1215,16 +1238,42 @@ class SettingsActivity : AppCompatActivity() {
             .show()
     }
 
+    // ---------- 资料夹：根目录过滤 ----------
+
+    /** 拉文件夹列表刷新归档索引，并更新两个页签入口行的计数文案。
+     *  供列表加载线程直接调用；入口行文案经 runOnUiThread 回主线程更新。 */
+    private fun refreshFolderIndex(): Pair<Set<String>, Set<String>> {
+        val folders = AsrClient.listFolders(this)
+        folderCount = folders.size
+        filedTaskRefs = folders.flatMap { f -> f.items.filter { it.first == "task" } }
+            .map { it.second }.toSet()
+        filedWxRefs = folders.flatMap { f -> f.items.filter { it.first == "wxchat" } }
+            .map { it.second }.toSet()
+        val filed = filedTaskRefs.size + filedWxRefs.size
+        val text = if (folderCount > 0)
+            getString(R.string.folder_entry_count, folderCount, filed)
+        else getString(R.string.folder_entry_desc)
+        runOnUiThread {
+            binding.asrFolderEntryText.text = text
+            binding.wxchatFolderEntryText.text = text
+        }
+        return filedTaskRefs to filedWxRefs
+    }
+
     private fun loadTasks() {
         Thread {
             try {
+                // 先刷新归档索引：根目录只显示未归入资料夹的条目
+                val filed = refreshFolderIndex().first
                 val arr = AsrClient.listTasks(this)
                 val parsed = ArrayList<TaskItem>(arr.length())
                 for (i in 0 until arr.length()) {
                     val o = arr.optJSONObject(i) ?: continue
+                    val id = o.optString("task_id")
+                    if (id in filed) continue  // 已归档：不出现在根目录
                     parsed.add(
                         TaskItem(
-                            id = o.optString("task_id"),
+                            id = id,
                             name = o.optString("name", "未命名录音"),
                             status = o.optString("status"),
                             stage = o.optString("stage"),
@@ -1246,6 +1295,8 @@ class SettingsActivity : AppCompatActivity() {
                     }
                     taskAdapter.notifyDataSetChanged()
                     asrListView.visibility = if (items.isEmpty()) View.GONE else View.VISIBLE
+                    asrEmptyView.text = if (items.isEmpty() && filed.isNotEmpty())
+                        getString(R.string.asr_all_filed) else getString(R.string.asr_manage_empty)
                     asrEmptyView.visibility = if (items.isEmpty()) View.VISIBLE else View.GONE
                 }
                 asrLoaded = true

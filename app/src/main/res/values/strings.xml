@@ -424,4 +424,9 @@
     <string name="folder_batch_skipped">（%1$d 条已在夹中）</string>
     <string name="folder_batch_failed">（%1$d 条失败）</string>
     <string name="folder_done">完成</string>
+    <string name="folder_entry_count">资料夹：%1$d 个文件夹 · 已归入 %2$d 条</string>
+    <string name="asr_all_filed">根目录没有待处理的录音
+已全部归入资料夹，点上方「资料夹」查看</string>
+    <string name="wxchat_all_filed">根目录没有待处理的聊天记录
+已全部归入资料夹，点上方「资料夹」查看</string>
 </resources>

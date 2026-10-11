@@ -212,12 +212,14 @@ class FolderActivity : AppCompatActivity() {
 
     private fun pickKey(r: PickRow) = "${r.kind}:${r.ref}"
 
-    /** 打开挑选面板：列出未在本夹的转写完成录音 + 有效聊天记录，勾选后批量加入。 */
+    /** 打开挑选面板：列出未归入任何资料夹的转写完成录音 + 有效聊天记录（根目录条目），
+     *  勾选后批量加入；已归档条目不出现——一条记录只归属一个文件夹。 */
     private fun showAddItemsPicker() {
         val d = detail ?: return
-        val inFolder = d.entries.map { it.kind to it.ref }.toSet()
         Thread {
             try {
+                val folders = AsrClient.listFolders(this)
+                val filed = folders.flatMap { it.items }.toSet()
                 val tasks = AsrClient.listTasks(this)
                 val shares = AsrClient.listWxChatShares(this)
                 val asrRows = ArrayList<PickRow>()
@@ -225,7 +227,7 @@ class FolderActivity : AppCompatActivity() {
                     val o = tasks.optJSONObject(i) ?: continue
                     val id = o.optString("task_id")
                     if (id.isEmpty() || o.optString("status") != "SUCCEEDED") continue
-                    if (("task" to id) in inFolder) continue
+                    if (("task" to id) in filed) continue  // 已归档（含本夹）：不可再挑
                     val sec = o.optLong("duration_ms") / 1000
                     val meta = buildString {
                         append(if (o.optBoolean("is_video")) getString(R.string.folder_pick_video)
@@ -239,7 +241,7 @@ class FolderActivity : AppCompatActivity() {
                 for (i in 0 until shares.length()) {
                     val o = shares.optJSONObject(i) ?: continue
                     val sid = o.optString("share_id")
-                    if (sid.isEmpty() || ("wxchat" to sid) in inFolder) continue
+                    if (sid.isEmpty() || ("wxchat" to sid) in filed) continue
                     wxRows.add(PickRow(null, "wxchat", sid,
                         o.optString("title", "聊天记录"),
                         getString(R.string.folder_pick_msg_count, o.optInt("message_count", 0))))
@@ -559,7 +561,9 @@ class FolderActivity : AppCompatActivity() {
         val ttl = Spinner(this)
         ttl.adapter = ArrayAdapter(this, android.R.layout.simple_spinner_dropdown_item,
             arrayOf("1小时", "24小时", "3天", "7天", "30天"))
-        ttl.setSelection(1)
+        // 默认值 = 上次分享时选择的参数（与录音分享要求页共用同一份记忆）
+        ttl.setSelection(ttlValues.indexOf(AppPrefs.getShareValidityHours(this))
+            .let { if (it >= 0) it else 1 })
         container.addView(ttl)
         container.addView(TextView(this).apply {
             text = getString(R.string.folder_share_opens)
@@ -569,15 +573,18 @@ class FolderActivity : AppCompatActivity() {
         val opens = Spinner(this)
         opens.adapter = ArrayAdapter(this, android.R.layout.simple_spinner_dropdown_item,
             arrayOf("1次", "5次", "10次", "不限"))
-        opens.setSelection(1)
+        opens.setSelection(opensValues.indexOf(AppPrefs.getShareMaxOpens(this))
+            .let { if (it >= 0) it else 1 })
         container.addView(opens)
         AlertDialog.Builder(this)
             .setTitle(R.string.folder_share_title)
             .setView(container)
             .setNegativeButton(android.R.string.cancel, null)
             .setPositiveButton(R.string.asr_share_create) { _, _ ->
-                generateShare(d.folderId, d.name,
-                    ttlValues[ttl.selectedItemPosition], opensValues[opens.selectedItemPosition])
+                val hours = ttlValues[ttl.selectedItemPosition]
+                val maxOpens = opensValues[opens.selectedItemPosition]
+                AppPrefs.setShareDefaults(this, hours, maxOpens)
+                generateShare(d.folderId, d.name, hours, maxOpens)
             }
             .show()
     }

@@ -191,6 +191,27 @@ def _member_owned(kind, ref, user):
     return "未知条目类型"
 
 
+def _detach_from_other_folders(user, fid, kind, ref):
+    """move 语义：把条目从该用户其他文件夹中移除（一条记录最多归属一个文件夹）。
+    返回被移出过的文件夹名列表。"""
+    moved_from = []
+    for p in DATA.glob("*.folder.json"):
+        try:
+            fd = json.loads(p.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        if fd.get("owner") != user or fd.get("folder_id") == fid:
+            continue
+        items = fd.get("items") or []
+        kept = [it for it in items
+                if not (it.get("kind") == kind and str(it.get("ref")) == ref)]
+        if len(kept) != len(items):
+            fd["items"] = kept
+            save_folder(fd)
+            moved_from.append(fd.get("name") or fd.get("folder_id") or "")
+    return moved_from
+
+
 def folder_entry_view(item):
     """单条目摘要（标题/元信息/存活状态），管理接口与分享目录页共用。"""
     kind, ref = item.get("kind"), str(item.get("ref") or "")
@@ -2196,7 +2217,10 @@ def folder_list():
         alive = sum(1 for it in all_items if folder_entry_view(it)["alive"])
         items.append({"folder_id": fd["folder_id"], "name": fd.get("name") or "未命名文件夹",
                       "item_count": len(all_items), "alive_count": alive,
-                      "created_at": fd.get("created_at")})
+                      "created_at": fd.get("created_at"),
+                      # 成员明细（轻量 kind+ref）：APP 据此把已归档条目从根目录列表隐藏
+                      "items": [{"kind": it.get("kind"), "ref": str(it.get("ref") or "")}
+                                for it in all_items]})
     items.sort(key=lambda x: x.get("created_at") or 0, reverse=True)
     return jsonify(folders=items)
 
@@ -2289,10 +2313,12 @@ def folder_add_item(fid):
         return jsonify(added=False, message="已在该文件夹中")
     if len(items) >= FOLDER_MAX_ITEMS:
         return jsonify(error="单个文件夹最多%d条" % FOLDER_MAX_ITEMS), 400
+    # move 语义：一条记录只归属一个文件夹，先从其他夹移出
+    moved_from = _detach_from_other_folders(user, fd["folder_id"], kind, ref)
     items.append({"kind": kind, "ref": ref, "added_at": time.time()})
     fd["items"] = items
     save_folder(fd)
-    return jsonify(added=True, item_count=len(items))
+    return jsonify(added=True, item_count=len(items), moved_from=moved_from)
 
 
 @app.post("/api/asr/folders/<fid>/items/remove")
@@ -2335,7 +2361,7 @@ def folder_add_items_batch(fid):
         return jsonify(error="单次最多%d条" % FOLDER_MAX_ITEMS), 400
     items = fd.get("items") or []
     seen = {(it.get("kind"), str(it.get("ref"))) for it in items}
-    added, skipped = 0, 0
+    added, skipped, moved_cnt = 0, 0, 0
     failed = []
     for it in raw:
         if not isinstance(it, dict):
@@ -2353,12 +2379,15 @@ def folder_add_items_batch(fid):
         if len(items) >= FOLDER_MAX_ITEMS:
             failed.append({"kind": kind, "ref": ref, "error": "文件夹已满"})
             continue
+        # move 语义：一条记录只归属一个文件夹，先从其他夹移出
+        moved_cnt += len(_detach_from_other_folders(user, fd["folder_id"], kind, ref))
         items.append({"kind": kind, "ref": ref, "added_at": time.time()})
         seen.add(key)
         added += 1
     fd["items"] = items
     save_folder(fd)
-    return jsonify(added=added, skipped=skipped, failed=failed, item_count=len(items))
+    return jsonify(added=added, skipped=skipped, failed=failed,
+                   moved_from_others=moved_cnt, item_count=len(items))
 
 
 @app.post("/api/asr/folders/<fid>/share")

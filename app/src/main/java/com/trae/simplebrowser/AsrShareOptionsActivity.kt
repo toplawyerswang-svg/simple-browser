@@ -61,16 +61,21 @@ class AsrShareOptionsActivity : AppCompatActivity() {
             arrayOf("1小时", "24小时", "3天", "7天", "30天"))
         opensSpinner.adapter = ArrayAdapter(this, android.R.layout.simple_spinner_dropdown_item,
             arrayOf("1次", "5次", "10次", "不限"))
-        ttlSpinner.setSelection(1)
-        opensSpinner.setSelection(1)
+        // 默认值 = 上次分享时选择的参数（AppPrefs 全局记住，与文件夹分享共用）
+        ttlSpinner.setSelection(ttlValues.indexOf(AppPrefs.getShareValidityHours(this))
+            .let { if (it >= 0) it else 1 })
+        opensSpinner.setSelection(opensValues.indexOf(AppPrefs.getShareMaxOpens(this))
+            .let { if (it >= 0) it else 1 })
 
         findViewById<Button>(R.id.req_generate_btn).setOnClickListener {
             if (taskId.isNullOrEmpty()) {
                 Toast.makeText(this, R.string.asr_no_task_id, Toast.LENGTH_SHORT).show()
                 return@setOnClickListener
             }
-            generate(taskId, ttlValues[ttlSpinner.selectedItemPosition],
-                opensValues[opensSpinner.selectedItemPosition], allowPlay, showNames)
+            val hours = ttlValues[ttlSpinner.selectedItemPosition]
+            val opens = opensValues[opensSpinner.selectedItemPosition]
+            AppPrefs.setShareDefaults(this, hours, opens)
+            generate(taskId, hours, opens, allowPlay, showNames)
         }
     }
 
