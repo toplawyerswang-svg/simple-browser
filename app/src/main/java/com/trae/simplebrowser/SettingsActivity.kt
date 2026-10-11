@@ -89,6 +89,10 @@ class SettingsActivity : AppCompatActivity() {
     private var mediaPlayer: MediaPlayer? = null
     private var playingTaskId: String? = null
 
+    // ---------- 资料夹：录音列表多选状态 ----------
+    private var asrSelectMode = false
+    private val asrSelected = LinkedHashSet<String>()   // 选中的 task_id
+
     // ---------- 聊天记录分享管理状态 ----------
     private data class WxShareItem(
         val shareId: String,
@@ -112,6 +116,10 @@ class SettingsActivity : AppCompatActivity() {
     private lateinit var wxIdentityView: TextView
     private lateinit var wxListView: ListView
     private lateinit var wxEmptyView: TextView
+
+    // ---------- 资料夹：聊天记录列表多选状态 ----------
+    private var wxSelectMode = false
+    private val wxSelected = LinkedHashSet<String>()    // 选中的 share_id
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -459,27 +467,49 @@ class SettingsActivity : AppCompatActivity() {
                 val item = items[position]
                 v.findViewById<TextView>(R.id.item_name).text = item.name
                 v.findViewById<TextView>(R.id.item_meta).text = metaText(item)
+                val check = v.findViewById<CheckBox>(R.id.item_check)
                 val play = v.findViewById<TextView>(R.id.item_play)
-                play.text = if (playingTaskId == item.id) "⏸" else "▶"
-                play.setOnClickListener { togglePlay(item) }
-                v.findViewById<TextView>(R.id.item_open).setOnClickListener { openTask(item) }
+                val open = v.findViewById<TextView>(R.id.item_open)
+                if (asrSelectMode) {
+                    // 多选态：行首复选框，行内操作按钮让位（点行=勾选/取消）
+                    check.visibility = View.VISIBLE
+                    check.isChecked = item.id in asrSelected
+                    play.visibility = View.GONE
+                    open.visibility = View.GONE
+                } else {
+                    check.visibility = View.GONE
+                    play.visibility = View.VISIBLE
+                    open.visibility = View.VISIBLE
+                    play.text = if (playingTaskId == item.id) "⏸" else "▶"
+                    play.setOnClickListener { togglePlay(item) }
+                    open.setOnClickListener { openTask(item) }
+                }
                 return v
             }
         }
         asrListView.adapter = taskAdapter
-        asrListView.setOnItemClickListener { _, _, position, _ -> openTask(items[position]) }
+        asrListView.setOnItemClickListener { _, _, position, _ ->
+            val item = items[position]
+            if (asrSelectMode) toggleAsrSelection(item) else openTask(item)
+        }
         asrListView.setOnItemLongClickListener { _, _, position, _ ->
             val item = items[position]
+            if (asrSelectMode) {
+                toggleAsrSelection(item)
+                return@setOnItemLongClickListener true
+            }
             AlertDialog.Builder(this)
                 .setTitle(item.name)
                 .setItems(arrayOf(
                     getString(R.string.asr_item_result),
                     getString(R.string.folder_add_action),
+                    getString(R.string.folder_select_mode),
                     getString(R.string.asr_delete_ok))) { _, which ->
                     when (which) {
                         0 -> openTask(item)
                         1 -> showAddToFolderDialog("task", item.id, item.name)
-                        2 -> confirmDelete(item)
+                        2 -> enterAsrSelection()
+                        3 -> confirmDelete(item)
                     }
                 }
                 .setNegativeButton(android.R.string.cancel, null)
@@ -488,6 +518,15 @@ class SettingsActivity : AppCompatActivity() {
         }
         binding.asrFolderEntry.setOnClickListener {
             startActivity(Intent(this, FolderActivity::class.java))
+        }
+        binding.asrSelDone.setOnClickListener { exitAsrSelection() }
+        binding.asrSelMove.setOnClickListener {
+            if (asrSelected.isEmpty()) {
+                Toast.makeText(this, R.string.folder_select_empty, Toast.LENGTH_SHORT).show()
+                return@setOnClickListener
+            }
+            val payload = items.filter { it.id in asrSelected }.map { "task" to it.id }
+            showBatchAddDialog(payload)
         }
 
         binding.asrTokenVerifyBtn.setOnClickListener {
@@ -578,6 +617,13 @@ class SettingsActivity : AppCompatActivity() {
                 val v = convertView ?: LayoutInflater.from(this@SettingsActivity)
                     .inflate(R.layout.wx_share_item, parent, false)
                 val item = wxShares[position]
+                val check = v.findViewById<CheckBox>(R.id.item_check)
+                check.visibility = if (wxSelectMode) View.VISIBLE else View.GONE
+                check.isChecked = item.shareId in wxSelected
+                val rowBtnVis = if (wxSelectMode) View.GONE else View.VISIBLE
+                v.findViewById<TextView>(R.id.item_copy).visibility = rowBtnVis
+                v.findViewById<TextView>(R.id.item_rename).visibility = rowBtnVis
+                v.findViewById<TextView>(R.id.item_open).visibility = rowBtnVis
                 v.findViewById<TextView>(R.id.item_name).text = item.title
                 v.findViewById<TextView>(R.id.item_meta).text = wxMetaText(item)
                 v.findViewById<TextView>(R.id.item_members).text =
@@ -615,20 +661,30 @@ class SettingsActivity : AppCompatActivity() {
             }
         }
         wxListView.adapter = wxAdapter
-        wxListView.setOnItemClickListener { _, _, position, _ -> openWxShare(wxShares[position]) }
+        wxListView.setOnItemClickListener { _, _, position, _ ->
+            val item = wxShares[position]
+            if (wxSelectMode) toggleWxSelection(item) else openWxShare(item)
+        }
         wxListView.setOnItemLongClickListener { _, _, position, _ ->
             val item = wxShares[position]
+            if (wxSelectMode) {
+                toggleWxSelection(item)
+                return@setOnItemLongClickListener true
+            }
             AlertDialog.Builder(this)
                 .setTitle(item.title)
                 .setItems(arrayOf(
                     getString(R.string.wxchat_item_open),
                     getString(R.string.wxchat_item_copy),
                     getString(R.string.folder_add_action),
-                    getString(R.string.asr_delete_ok))) { _, which ->                    when (which) {
+                    getString(R.string.folder_select_mode),
+                    getString(R.string.asr_delete_ok))) { _, which ->
+                    when (which) {
                         0 -> openWxShare(item)
                         1 -> copyWxLink(item)
                         2 -> showAddToFolderDialog("wxchat", item.shareId, item.title)
-                        3 -> confirmDeleteWxShare(item)
+                        3 -> enterWxSelection()
+                        4 -> confirmDeleteWxShare(item)
                     }
                 }
                 .setNegativeButton(android.R.string.cancel, null)
@@ -638,9 +694,159 @@ class SettingsActivity : AppCompatActivity() {
         binding.wxchatFolderEntry.setOnClickListener {
             startActivity(Intent(this, FolderActivity::class.java))
         }
+        binding.wxchatSelDone.setOnClickListener { exitWxSelection() }
+        binding.wxchatSelMove.setOnClickListener {
+            if (wxSelected.isEmpty()) {
+                Toast.makeText(this, R.string.folder_select_empty, Toast.LENGTH_SHORT).show()
+                return@setOnClickListener
+            }
+            val payload = wxShares.filter { it.shareId in wxSelected }.map { "wxchat" to it.shareId }
+            showBatchAddDialog(payload)
+        }
 
         binding.wxchatRefresh.setOnClickListener { loadWxShares() }
         binding.wxchatNamesBtn.setOnClickListener { showNameMappingDialog() }
+    }
+
+    // ---------- 资料夹：两个列表的多选（同一套交互） ----------
+
+    private fun enterAsrSelection() {
+        asrSelectMode = true
+        asrSelected.clear()
+        renderAsrSelection()
+        taskAdapter.notifyDataSetChanged()
+    }
+
+    private fun exitAsrSelection() {
+        asrSelectMode = false
+        asrSelected.clear()
+        if (!isFinishing && !isDestroyed) {
+            binding.asrSelectionBar.visibility = View.GONE
+            taskAdapter.notifyDataSetChanged()
+        }
+    }
+
+    private fun renderAsrSelection() {
+        binding.asrSelectionBar.visibility = View.VISIBLE
+        binding.asrSelCount.text = getString(R.string.folder_selected_count, asrSelected.size)
+        binding.asrSelMove.isEnabled = asrSelected.isNotEmpty()
+        binding.asrSelMove.alpha = if (asrSelected.isEmpty()) 0.5f else 1f
+    }
+
+    private fun toggleAsrSelection(item: TaskItem) {
+        if (!asrSelected.add(item.id)) asrSelected.remove(item.id)
+        renderAsrSelection()
+        taskAdapter.notifyDataSetChanged()
+    }
+
+    private fun enterWxSelection() {
+        wxSelectMode = true
+        wxSelected.clear()
+        renderWxSelection()
+        wxAdapter.notifyDataSetChanged()
+    }
+
+    private fun exitWxSelection() {
+        wxSelectMode = false
+        wxSelected.clear()
+        if (!isFinishing && !isDestroyed) {
+            binding.wxchatSelectionBar.visibility = View.GONE
+            wxAdapter.notifyDataSetChanged()
+        }
+    }
+
+    private fun renderWxSelection() {
+        binding.wxchatSelectionBar.visibility = View.VISIBLE
+        binding.wxchatSelCount.text = getString(R.string.folder_selected_count, wxSelected.size)
+        binding.wxchatSelMove.isEnabled = wxSelected.isNotEmpty()
+        binding.wxchatSelMove.alpha = if (wxSelected.isEmpty()) 0.5f else 1f
+    }
+
+    private fun toggleWxSelection(item: WxShareItem) {
+        if (!wxSelected.add(item.shareId)) wxSelected.remove(item.shareId)
+        renderWxSelection()
+        wxAdapter.notifyDataSetChanged()
+    }
+
+    /** 多选移入：列出已有文件夹 + 新建项，批量加入（复用单条版的对话框样式）。 */
+    private fun showBatchAddDialog(payload: List<Pair<String, String>>) {
+        Thread {
+            try {
+                val list = AsrClient.listFolders(this)
+                runOnUiThread {
+                    if (isFinishing || isDestroyed) return@runOnUiThread
+                    val options = mutableListOf(getString(R.string.folder_new_and_add))
+                    list.forEach { options.add(it.name) }
+                    AlertDialog.Builder(this)
+                        .setTitle(getString(R.string.folder_move_selected, payload.size))
+                        .setItems(options.toTypedArray()) { _, which ->
+                            if (which == 0) {
+                                promptNewFolderAndAddBatch(payload)
+                            } else {
+                                val f = list[which - 1]
+                                addBatchToFolder(f.folderId, f.name, payload)
+                            }
+                        }
+                        .setNegativeButton(android.R.string.cancel, null)
+                        .show()
+                }
+            } catch (e: Exception) {
+                runOnUiThread {
+                    if (!isFinishing && !isDestroyed) Toast.makeText(this, asrErrorText(e), Toast.LENGTH_LONG).show()
+                }
+            }
+        }.start()
+    }
+
+    private fun promptNewFolderAndAddBatch(payload: List<Pair<String, String>>) {
+        val input = EditText(this).apply {
+            hint = getString(R.string.folder_name_hint)
+            setSingleLine(true)
+        }
+        AlertDialog.Builder(this)
+            .setTitle(R.string.folder_create_title)
+            .setView(input)
+            .setNegativeButton(android.R.string.cancel, null)
+            .setPositiveButton(android.R.string.ok) { _, _ ->
+                val name = input.text.toString().trim()
+                if (name.isEmpty()) return@setPositiveButton
+                Thread {
+                    try {
+                        val fid = AsrClient.createFolder(this, name)
+                        runOnUiThread {
+                            if (isFinishing || isDestroyed) return@runOnUiThread
+                            addBatchToFolder(fid, name, payload)
+                        }
+                    } catch (e: Exception) {
+                        runOnUiThread {
+                            if (!isFinishing && !isDestroyed) Toast.makeText(this, asrErrorText(e), Toast.LENGTH_LONG).show()
+                        }
+                    }
+                }.start()
+            }
+            .show()
+    }
+
+    private fun addBatchToFolder(folderId: String, folderName: String,
+                                 payload: List<Pair<String, String>>) {
+        Thread {
+            try {
+                val (added, skipped, failed) = AsrClient.folderAddItems(this, folderId, payload)
+                runOnUiThread {
+                    if (isFinishing || isDestroyed) return@runOnUiThread
+                    var msg = getString(R.string.folder_batch_added, folderName, added)
+                    if (skipped > 0) msg += getString(R.string.folder_batch_skipped, skipped)
+                    if (failed > 0) msg += getString(R.string.folder_batch_failed, failed)
+                    Toast.makeText(this, msg, Toast.LENGTH_LONG).show()
+                    exitAsrSelection()
+                    exitWxSelection()
+                }
+            } catch (e: Exception) {
+                runOnUiThread {
+                    if (!isFinishing && !isDestroyed) Toast.makeText(this, asrErrorText(e), Toast.LENGTH_LONG).show()
+                }
+            }
+        }.start()
     }
 
     // ---------- 资料夹：移入对话框（新建或选已有，录音与聊天记录共用一套文件夹）
@@ -863,6 +1069,10 @@ class SettingsActivity : AppCompatActivity() {
                     refreshWxChatPanel()
                     wxShares.clear()
                     wxShares.addAll(parsed)
+                    if (wxSelectMode) {
+                        wxSelected.retainAll(parsed.map { it.shareId })
+                        renderWxSelection()
+                    }
                     wxAdapter.notifyDataSetChanged()
                     wxListView.visibility = if (wxShares.isEmpty()) View.GONE else View.VISIBLE
                     wxEmptyView.visibility = if (wxShares.isEmpty()) View.VISIBLE else View.GONE
@@ -1029,6 +1239,11 @@ class SettingsActivity : AppCompatActivity() {
                     if (isFinishing || isDestroyed) return@runOnUiThread
                     items.clear()
                     items.addAll(parsed)
+                    if (asrSelectMode) {
+                        // 刷新后清理已消失条目的勾选，避免计数虚高
+                        asrSelected.retainAll(parsed.map { it.id })
+                        renderAsrSelection()
+                    }
                     taskAdapter.notifyDataSetChanged()
                     asrListView.visibility = if (items.isEmpty()) View.GONE else View.VISIBLE
                     asrEmptyView.visibility = if (items.isEmpty()) View.VISIBLE else View.GONE
@@ -1555,6 +1770,8 @@ class SettingsActivity : AppCompatActivity() {
     override fun onBackPressed() {
         when {
             wxPreviewVisible() -> closeWxPreview()  // 一步回列表；预览内不做页内后退
+            asrSelectMode -> exitAsrSelection()
+            wxSelectMode -> exitWxSelection()
             selectionMode -> exitSelection()
             else -> super.onBackPressed()
         }

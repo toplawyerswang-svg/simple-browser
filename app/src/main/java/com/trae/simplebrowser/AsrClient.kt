@@ -571,6 +571,33 @@ object AsrClient {
         checkCode(code, body)
     }
 
+    /** 批量加入文件夹（列表多选移入 / 文件夹内挑选添加共用）。
+     *  items 为 (kind, ref) 列表；返回 (added, skipped, failed) 三元组，failed 为失败条数。 */
+    fun folderAddItems(context: Context, folderId: String, items: List<Pair<String, String>>):
+            Triple<Int, Int, Int> {
+        val conn = (URL("$BASE_URL/folders/$folderId/items/batch").openConnection() as HttpURLConnection).apply {
+            requestMethod = "POST"
+            connectTimeout = 15000
+            readTimeout = 30000
+            doOutput = true
+            setRequestProperty("X-LZ-Token", token(context))
+            setRequestProperty("Content-Type", "application/json")
+        }
+        val arr = JSONArray()
+        items.forEach { (kind, ref) ->
+            arr.put(JSONObject().put("kind", kind).put("ref", ref))
+        }
+        conn.outputStream.use {
+            it.write(JSONObject().put("items", arr).toString().toByteArray(Charsets.UTF_8))
+        }
+        val code = conn.responseCode
+        val body = readBody(conn, code)
+        checkCode(code, body)
+        val j = JSONObject(body)
+        return Triple(j.optInt("added", 0), j.optInt("skipped", 0),
+            (j.optJSONArray("failed") ?: JSONArray()).length())
+    }
+
     /** 把条目移出文件夹（不删除成员本体）。 */
     fun folderRemoveItem(context: Context, folderId: String, kind: String, ref: String) {
         val conn = (URL("$BASE_URL/folders/$folderId/items/remove").openConnection() as HttpURLConnection).apply {

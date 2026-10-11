@@ -10,10 +10,12 @@ import android.view.LayoutInflater
 import android.view.View
 import android.view.ViewGroup
 import android.widget.ArrayAdapter
+import android.widget.CheckBox
 import android.widget.EditText
 import android.widget.FrameLayout
 import android.widget.LinearLayout
 import android.widget.BaseAdapter
+import android.widget.ListView
 import android.widget.Spinner
 import android.widget.TextView
 import android.widget.Toast
@@ -49,7 +51,9 @@ class FolderActivity : AppCompatActivity() {
         binding.btnBack.setOnClickListener {
             if (detail != null) exitDetail() else finish()
         }
-        binding.btnNew.setOnClickListener { promptCreateFolder() }
+        binding.btnNew.setOnClickListener {
+            if (detail == null) promptCreateFolder() else showAddItemsPicker()
+        }
         binding.btnShare.setOnClickListener { promptShareOptions() }
         binding.btnMore.setOnClickListener { showDetailMenu() }
         binding.folderList.adapter = adapter
@@ -129,13 +133,16 @@ class FolderActivity : AppCompatActivity() {
         val d = detail
         if (d == null) {
             binding.tvTitle.text = getString(R.string.folder_title)
+            binding.btnNew.text = getString(R.string.folder_new)
             binding.btnNew.visibility = View.VISIBLE
             binding.btnShare.visibility = View.GONE
             binding.btnMore.visibility = View.GONE
             binding.folderEmptyHint.text = getString(R.string.folder_list_empty)
         } else {
             binding.tvTitle.text = d.name
-            binding.btnNew.visibility = View.GONE
+            // 详情态：在夹内向里添加外面的录音/聊天记录（多选）
+            binding.btnNew.text = getString(R.string.folder_add_items)
+            binding.btnNew.visibility = View.VISIBLE
             binding.btnShare.visibility = View.VISIBLE
             binding.btnMore.visibility = View.VISIBLE
         }
@@ -190,6 +197,153 @@ class FolderActivity : AppCompatActivity() {
             }
             return v
         }
+    }
+
+    // ---------- 文件夹内添加：挑外面的录音/聊天记录（多选） ----------
+
+    /** 挑选行：header 非空为分组标题行；否则为可勾选条目。 */
+    private data class PickRow(
+        val header: String?,
+        val kind: String,
+        val ref: String,
+        val name: String,
+        val meta: String
+    )
+
+    private fun pickKey(r: PickRow) = "${r.kind}:${r.ref}"
+
+    /** 打开挑选面板：列出未在本夹的转写完成录音 + 有效聊天记录，勾选后批量加入。 */
+    private fun showAddItemsPicker() {
+        val d = detail ?: return
+        val inFolder = d.entries.map { it.kind to it.ref }.toSet()
+        Thread {
+            try {
+                val tasks = AsrClient.listTasks(this)
+                val shares = AsrClient.listWxChatShares(this)
+                val asrRows = ArrayList<PickRow>()
+                for (i in 0 until tasks.length()) {
+                    val o = tasks.optJSONObject(i) ?: continue
+                    val id = o.optString("task_id")
+                    if (id.isEmpty() || o.optString("status") != "SUCCEEDED") continue
+                    if (("task" to id) in inFolder) continue
+                    val sec = o.optLong("duration_ms") / 1000
+                    val meta = buildString {
+                        append(if (o.optBoolean("is_video")) getString(R.string.folder_pick_video)
+                               else getString(R.string.folder_pick_audio))
+                        if (sec > 0) append(" · %d分%02d秒".format(sec / 60, sec % 60))
+                    }
+                    asrRows.add(PickRow(null, "task", id,
+                        o.optString("name", "未命名录音"), meta))
+                }
+                val wxRows = ArrayList<PickRow>()
+                for (i in 0 until shares.length()) {
+                    val o = shares.optJSONObject(i) ?: continue
+                    val sid = o.optString("share_id")
+                    if (sid.isEmpty() || ("wxchat" to sid) in inFolder) continue
+                    wxRows.add(PickRow(null, "wxchat", sid,
+                        o.optString("title", "聊天记录"),
+                        getString(R.string.folder_pick_msg_count, o.optInt("message_count", 0))))
+                }
+                val rows = ArrayList<PickRow>()
+                if (asrRows.isNotEmpty()) {
+                    rows.add(PickRow(getString(R.string.folder_pick_section_asr), "", "", "", ""))
+                    rows.addAll(asrRows)
+                }
+                if (wxRows.isNotEmpty()) {
+                    rows.add(PickRow(getString(R.string.folder_pick_section_wx), "", "", "", ""))
+                    rows.addAll(wxRows)
+                }
+                runOnUiThread {
+                    if (isFinishing || isDestroyed) return@runOnUiThread
+                    if (rows.isEmpty()) {
+                        toast(R.string.folder_pick_empty)
+                        return@runOnUiThread
+                    }
+                    showPickDialog(d, rows)
+                }
+            } catch (e: Exception) {
+                uiError(e)
+            }
+        }.start()
+    }
+
+    private fun showPickDialog(d: AsrClient.FolderDetail, rows: List<PickRow>) {
+        val checked = LinkedHashSet<String>()
+        val listView = ListView(this)
+        listView.divider = null
+        val adapter = object : BaseAdapter() {
+            override fun getCount(): Int = rows.size
+            override fun getItem(position: Int): Any = rows[position]
+            override fun getItemId(position: Int): Long = position.toLong()
+            override fun getViewTypeCount(): Int = 2
+            override fun getItemViewType(position: Int): Int =
+                if (rows[position].header != null) 0 else 1
+            override fun isEnabled(position: Int): Boolean = rows[position].header == null
+
+            override fun getView(position: Int, convertView: View?, parent: ViewGroup): View {
+                val row = rows[position]
+                if (row.header != null) {
+                    val tv = convertView as? TextView ?: TextView(this@FolderActivity).apply {
+                        setPadding(dp(20), dp(12), dp(20), dp(4))
+                        setTextSize(android.util.TypedValue.COMPLEX_UNIT_SP, 12f)
+                        setTextColor(0xFF8A8A8A.toInt())
+                    }
+                    tv.text = row.header
+                    return tv
+                }
+                val v = convertView ?: LayoutInflater.from(this@FolderActivity)
+                    .inflate(R.layout.folder_pick_item, parent, false)
+                v.findViewById<TextView>(R.id.pick_icon).text =
+                    if (row.kind == "task") "🎙" else "💬"
+                v.findViewById<TextView>(R.id.pick_name).text = row.name
+                v.findViewById<TextView>(R.id.pick_meta).text = row.meta
+                v.findViewById<CheckBox>(R.id.pick_check).isChecked = pickKey(row) in checked
+                return v
+            }
+        }
+        listView.adapter = adapter
+        listView.setOnItemClickListener { _, _, position, _ ->
+            val row = rows[position]
+            if (row.header != null) return@setOnItemClickListener
+            val k = pickKey(row)
+            if (!checked.add(k)) checked.remove(k)
+            adapter.notifyDataSetChanged()
+        }
+        val container = FrameLayout(this)
+        container.addView(listView, FrameLayout.LayoutParams(
+            FrameLayout.LayoutParams.MATCH_PARENT, dp(380)))
+        AlertDialog.Builder(this)
+            .setTitle(getString(R.string.folder_add_picker_title, d.name))
+            .setView(container)
+            .setNegativeButton(android.R.string.cancel, null)
+            .setPositiveButton(android.R.string.ok) { _, _ ->
+                if (checked.isEmpty()) {
+                    toast(R.string.folder_select_empty)
+                    return@setPositiveButton
+                }
+                val payload = rows.filter { it.header == null && pickKey(it) in checked }
+                    .map { it.kind to it.ref }
+                addPickedItems(d.folderId, payload)
+            }
+            .show()
+    }
+
+    private fun addPickedItems(folderId: String, payload: List<Pair<String, String>>) {
+        Thread {
+            try {
+                val (added, skipped, failed) = AsrClient.folderAddItems(this, folderId, payload)
+                runOnUiThread {
+                    if (isFinishing || isDestroyed) return@runOnUiThread
+                    var msg = getString(R.string.folder_pick_added, added)
+                    if (skipped > 0) msg += getString(R.string.folder_batch_skipped, skipped)
+                    if (failed > 0) msg += getString(R.string.folder_batch_failed, failed)
+                    Toast.makeText(this, msg, Toast.LENGTH_LONG).show()
+                    if (detail?.folderId == folderId) loadDetail() else loadList()
+                }
+            } catch (e: Exception) {
+                uiError(e)
+            }
+        }.start()
     }
 
     // ---------- 成员打开 / 移出
@@ -513,6 +667,8 @@ class FolderActivity : AppCompatActivity() {
         binding.previewContainer.visibility == View.VISIBLE
 
     // ---------- 小工具
+
+    private fun dp(v: Int): Int = (v * resources.displayMetrics.density).toInt()
 
     private fun toast(resId: Int) {
         Toast.makeText(this, resId, Toast.LENGTH_SHORT).show()

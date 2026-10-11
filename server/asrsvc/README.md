@@ -65,6 +65,7 @@
   - `GET/POST /api/asr/folders`（列表 / 新建 `{"name":...}`）
   - `GET/DELETE /api/asr/folders/<fid>`（详情带 entries / 删除，不删成员本体）
   - `POST /api/asr/folders/<fid>/rename`（改名）、`POST .../items`（加入 `{"kind","ref"}`，幂等去重）、
+    `POST .../items/batch`（批量加入 `{"items":[{kind,ref},...]}` → `{added,skipped,failed}`，列表多选与夹内添加共用）、
     `POST .../items/remove`（移出）、`POST .../share`（生成聚合分享，form: validity_hours/max_opens）
 - **分享页**（`type:"folder"` 的 share）：
   - `/s/<sid>` 目录页（条目卡片清单，打开计数在此完成）

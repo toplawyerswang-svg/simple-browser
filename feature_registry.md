@@ -9,7 +9,7 @@
 | 应用名称                      | 轻舟浏览器                                             |
 | applicationId             | `com.trae.lightboat`                              |
 | namespace（Java 包名）        | `com.trae.simplebrowser`                          |
-| versionCode / versionName | 47 / 1.15.0                                       |
+| versionCode / versionName | 48 / 1.15.1                                       |
 | minSdk / targetSdk        | 24 / 34                                           |
 | 旧版共存说明                    | 旧应用"极简浏览器"（`com.trae.simplebrowser`）仍可同机安装，二者互不覆盖 |
 
@@ -446,3 +446,16 @@
 | 关联代码 | FolderActivity.kt、activity_folder.xml、folder_list_item.xml、folder_entry_item.xml、AsrClient（FolderInfo/FolderEntry/FolderDetail + 7 个接口）、SettingsActivity（两页签入口行+长按菜单+showAddToFolderDialog/promptNewFolderAndAdd/addToFolder）、activity_settings.xml、strings（folder_* 15 条）、server/asrsvc/app.py                                                                                     |
 | 验证    | 服务端 curl 全链路冒烟 13 项 ✓（建夹/加两类条目/去重/详情/分享/目录页/条目页/切片 mp3 真实产出/错码 403/公网 nginx 200/清理）；真机（华为 FCP-AN10）：建夹→长按移入录音→长按移入聊天→详情两类条目→点录音进结果页→点聊天开页内预览→分享生成链接 ✓；浏览器（IAB）实测：目录页截图 ✓、录音条目页说话人分段+点段真实播放（audio readyState=4 playing）✓、聊天条目页气泡+图片+返回目录 ✓、folder.json 结构完整（分段/全文/摘要/70条消息/附件直链/真名）✓                                        |
 | 已知边界 | 文件夹内成员被删除/过期后条目显示「已失效」（不自动移除，可在详情页长按清理）；文件夹分享链接失效仅影响分享，不删文件夹；聊天条目的分享页依赖原 chat 分享存活（30 天）                                                                                                                          |
+
+
+### F-34 资料夹补强：夹内添加 + 列表多选批量移入
+
+| 项目    | 内容                                                                                                                                                                                                                                            |
+| ----- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 需求    | ① 进入某个资料夹后，可直接把外面的录音摘录/聊天记录挑进当前夹；② 在列表里先多选录音或聊天记录，再批量移入指定资料夹（两个方向，2026-10-11 用户追加）                                                                                                                    |
+| 夹内添加 | 资料夹详情页右上按钮由「＋ 新建」切换为「＋ 添加」（列表态仍是新建）：弹出挑选面板——按「录音摘录 / 聊天记录」分组（带分组标题），只列**转写已完成且不在本夹**的录音与**有效且不在本夹**的聊天记录，多选后确定批量加入，添加结果 toast（新增/已在夹中/失败分开计数）                                                          |
+| 列表多选 | 「音视频识别」「聊天记录分享」两个列表：长按菜单新增「多选」进入选择模式（行首出现复选框，行内操作按钮让位，点行=勾选/取消，长按行=切换）；列表上方出现选择栏（已选 N 项 / 移入文件夹 / 完成）；「移入文件夹」弹出文件夹列表+新建项，选中即批量加入；完成后自动退出选择；BACK 退出选择模式；刷新列表时自动清理已消失条目的勾选                                 |
+| 服务端   | 新增 `POST /api/asr/folders/<fid>/items/batch`（body {"items":[{kind,ref}...]}）→ {added, skipped, failed:[...]}：逐条校验归属/存活、夹内去重（skipped）、超上限或成员无效入 failed，其余入夹；仍受 50 条/夹上限约束                                                                                                          |
+| 关联代码 | SettingsActivity（asrSelectMode/asrSelected、wxSelectMode/wxSelected、enter/exit/render/toggle×2、showBatchAddDialog/promptNewFolderAndAddBatch/addBatchToFolder）、asr_task_item.xml/wx_share_item.xml（item_check 复选框）、activity_settings.xml（asr/wxchat_selection_bar）、FolderActivity（showAddItemsPicker/showPickDialog/addPickedItems/PickRow）、folder_pick_item.xml、AsrClient.folderAddItems、strings 18 条                                                        |
+| 验证    | 服务端 curl：批量加入（1 有效+1 不存在+1 重复）→ added=1/failed=1/skipped=1 ✓；重复再加全 skipped ✓；空 items 400 ✓；真机（华为 FCP-AN10）：列表多选 2 条→移入 case-zhang→服务器 +2 ✓、选择栏自动退出 ✓；夹内「＋添加」→面板正确过滤（处理中/已在夹的不出现）→勾 1 条聊天记录→服务器 +1、详情即时刷新 ✓；多选态按 BACK 退出且不离开页面 ✓                                        |
+| 已知边界 | 挑选面板的聊天记录条目受原分享 30 天寿命约束（失效后不再出现在面板）；批量加入时夹满/成员失效的条目在 toast 中提示「N 条失败」，不影响其余条目                                                                                                                            |

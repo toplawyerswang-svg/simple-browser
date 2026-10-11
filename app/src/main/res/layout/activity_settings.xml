@@ -489,6 +489,48 @@
                         android:textColor="#C0C0C0" />
                 </LinearLayout>
 
+                <!-- 多选操作栏：长按记录选「多选」进入 -->
+                <LinearLayout
+                    android:id="@+id/asr_selection_bar"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="6dp"
+                    android:gravity="center_vertical"
+                    android:orientation="horizontal"
+                    android:paddingStart="20dp"
+                    android:paddingEnd="12dp"
+                    android:visibility="gone">
+
+                    <TextView
+                        android:id="@+id/asr_sel_count"
+                        android:layout_width="0dp"
+                        android:layout_height="wrap_content"
+                        android:layout_weight="1"
+                        android:textSize="13sp"
+                        android:textColor="#1565C0" />
+
+                    <Button
+                        android:id="@+id/asr_sel_move"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:minHeight="0dp"
+                        android:paddingStart="12dp"
+                        android:paddingEnd="12dp"
+                        android:textSize="13sp"
+                        android:text="@string/folder_move_to" />
+
+                    <Button
+                        android:id="@+id/asr_sel_done"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:layout_marginStart="6dp"
+                        android:minHeight="0dp"
+                        android:paddingStart="12dp"
+                        android:paddingEnd="12dp"
+                        android:textSize="13sp"
+                        android:text="@string/folder_done" />
+                </LinearLayout>
+
                 <ListView
                     android:id="@+id/asr_list"
                     android:layout_width="match_parent"
@@ -621,6 +663,48 @@
                         android:text="›"
                         android:textSize="20sp"
                         android:textColor="#C0C0C0" />
+                </LinearLayout>
+
+                <!-- 多选操作栏：长按记录选「多选」进入 -->
+                <LinearLayout
+                    android:id="@+id/wxchat_selection_bar"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="6dp"
+                    android:gravity="center_vertical"
+                    android:orientation="horizontal"
+                    android:paddingStart="20dp"
+                    android:paddingEnd="12dp"
+                    android:visibility="gone">
+
+                    <TextView
+                        android:id="@+id/wxchat_sel_count"
+                        android:layout_width="0dp"
+                        android:layout_height="wrap_content"
+                        android:layout_weight="1"
+                        android:textSize="13sp"
+                        android:textColor="#1565C0" />
+
+                    <Button
+                        android:id="@+id/wxchat_sel_move"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:minHeight="0dp"
+                        android:paddingStart="12dp"
+                        android:paddingEnd="12dp"
+                        android:textSize="13sp"
+                        android:text="@string/folder_move_to" />
+
+                    <Button
+                        android:id="@+id/wxchat_sel_done"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:layout_marginStart="6dp"
+                        android:minHeight="0dp"
+                        android:paddingStart="12dp"
+                        android:paddingEnd="12dp"
+                        android:textSize="13sp"
+                        android:text="@string/folder_done" />
                 </LinearLayout>
 
                 <ListView

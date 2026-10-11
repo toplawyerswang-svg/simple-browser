@@ -2317,6 +2317,50 @@ def folder_remove_item(fid):
     return jsonify(removed=True, item_count=len(kept))
 
 
+@app.post("/api/asr/folders/<fid>/items/batch")
+def folder_add_items_batch(fid):
+    """批量加入条目（列表多选移入 / 文件夹内挑选添加共用）。
+    body: {"items":[{"kind","ref"},...]} → {added, skipped, failed:[{kind,ref,error}]}"""
+    user = authenticate()
+    if user is None:
+        return jsonify(error="unauthorized"), 401
+    fd = _folder_owned(fid, user)
+    if fd is None:
+        return jsonify(error="not found"), 404
+    j = request.get_json(silent=True) or {}
+    raw = j.get("items")
+    if not isinstance(raw, list) or not raw:
+        return jsonify(error="items 不能为空"), 400
+    if len(raw) > FOLDER_MAX_ITEMS:
+        return jsonify(error="单次最多%d条" % FOLDER_MAX_ITEMS), 400
+    items = fd.get("items") or []
+    seen = {(it.get("kind"), str(it.get("ref"))) for it in items}
+    added, skipped = 0, 0
+    failed = []
+    for it in raw:
+        if not isinstance(it, dict):
+            continue
+        kind = str(it.get("kind") or "").strip()
+        ref = str(it.get("ref") or "").strip()
+        key = (kind, ref)
+        if key in seen:
+            skipped += 1
+            continue
+        err = _member_owned(kind, ref, user)
+        if err:
+            failed.append({"kind": kind, "ref": ref, "error": err})
+            continue
+        if len(items) >= FOLDER_MAX_ITEMS:
+            failed.append({"kind": kind, "ref": ref, "error": "文件夹已满"})
+            continue
+        items.append({"kind": kind, "ref": ref, "added_at": time.time()})
+        seen.add(key)
+        added += 1
+    fd["items"] = items
+    save_folder(fd)
+    return jsonify(added=added, skipped=skipped, failed=failed, item_count=len(items))
+
+
 @app.post("/api/asr/folders/<fid>/share")
 def folder_create_share(fid):
     """为文件夹生成聚合分享：一个链接一张提取码，接收方目录浏览、逐条查看。"""
