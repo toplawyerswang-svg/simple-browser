@@ -48,6 +48,8 @@ class AsrResultActivity : AppCompatActivity() {
     private var hasDiarize = true
     private var taskId: String? = null
     private var resultPath: String? = null
+    private var resultJson: JSONObject = JSONObject()
+    private var displayName = ""
     private var aiSummary = ""
     private lateinit var aiTodos: org.json.JSONArray
     private var aiDone = false
@@ -71,6 +73,7 @@ class AsrResultActivity : AppCompatActivity() {
             return
         }
         resultPath = path
+        resultJson = result
 
         hasTimestamps = intent.getBooleanExtra("opt_timestamps", true)
         hasDiarize = intent.getBooleanExtra("opt_diarize", true)
@@ -86,6 +89,7 @@ class AsrResultActivity : AppCompatActivity() {
         val filename = intent.getStringExtra("display_name")
             ?: intent.getStringExtra("filename")
             ?: getString(R.string.asr_result_title)
+        displayName = filename
         findViewById<TextView>(R.id.asr_title).text = filename
         val durationMs = result.optLong("duration_ms", 0L)
         findViewById<TextView>(R.id.asr_meta).text = buildMeta(durationMs)
@@ -99,6 +103,7 @@ class AsrResultActivity : AppCompatActivity() {
             }
         }
         findViewById<Button>(R.id.asr_btn_copy).setOnClickListener { copyOrShare(share = false) }
+        findViewById<Button>(R.id.asr_btn_move_folder).setOnClickListener { moveToFolder() }
         findViewById<Button>(R.id.asr_btn_share).setOnClickListener { copyOrShare(share = true) }
         findViewById<Button>(R.id.asr_btn_share_link).setOnClickListener { shareLink() }
 
@@ -351,6 +356,7 @@ class AsrResultActivity : AppCompatActivity() {
                 }
                 runOnUiThread {
                     if (isFinishing) return@runOnUiThread
+                    resultJson = updated   // 复制全文走 resultJson，标注后须同步新名字
                     parseSpeakerNames(updated.optJSONObject("speaker_names"))
                     render()
                     Toast.makeText(this, R.string.asr_label_saved, Toast.LENGTH_SHORT).show()
@@ -563,16 +569,18 @@ class AsrResultActivity : AppCompatActivity() {
         Toast.makeText(this, R.string.asr_copied, Toast.LENGTH_SHORT).show()
     }
 
-    private fun buildPlainFullText(): String {
-        val sb = StringBuilder()
-        for (seg in activeSegments()) {
-            val speaker = speakerDisplayLabel(seg.speaker)
-            if (speaker.isNotEmpty()) sb.append('[').append(speaker).append(']')
-            if (hasTimestamps) sb.append('[').append(seg.begin).append('-').append(seg.end).append(']')
-            sb.append(seg.text).append('\n')
+    /** 移入资料夹：与设置页列表同一套归夹流程；归档后记录从根目录列表消失，设置页下次进入自动刷新。 */
+    private fun moveToFolder() {
+        val tid = taskId
+        if (tid.isNullOrEmpty()) {
+            Toast.makeText(this, R.string.asr_move_folder_no_task, Toast.LENGTH_SHORT).show()
+            return
         }
-        return sb.toString().trim()
+        FolderAddFlow.moveSingle(this, "task", tid, displayName)
     }
+
+    private fun buildPlainFullText(): String =
+        AsrTranscriptsJson.plainText(this, resultJson, hasTimestamps, hasDiarize, showMandarin)
 
     private fun copyOrShare(share: Boolean) {
         val text = buildPlainFullText()

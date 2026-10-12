@@ -568,25 +568,7 @@ object AsrClient {
         checkCode(code, body)
     }
 
-    /** 把录音转写任务（kind=task）或聊天记录分享（kind=wxchat）加入文件夹。 */
-    fun folderAddItem(context: Context, folderId: String, kind: String, ref: String) {
-        val conn = (URL("$BASE_URL/folders/$folderId/items").openConnection() as HttpURLConnection).apply {
-            requestMethod = "POST"
-            connectTimeout = 15000
-            readTimeout = 20000
-            doOutput = true
-            setRequestProperty("X-LZ-Token", token(context))
-            setRequestProperty("Content-Type", "application/json")
-        }
-        conn.outputStream.use {
-            it.write(JSONObject().put("kind", kind).put("ref", ref).toString().toByteArray(Charsets.UTF_8))
-        }
-        val code = conn.responseCode
-        val body = readBody(conn, code)
-        checkCode(code, body)
-    }
-
-    /** 批量加入文件夹（列表多选移入 / 文件夹内挑选添加共用）。
+    /** 批量加入文件夹（列表多选移入 / 单条移入 / 文件夹内挑选添加共用）。
      *  items 为 (kind, ref) 列表；返回 (added, skipped, failed) 三元组，failed 为失败条数。 */
     fun folderAddItems(context: Context, folderId: String, items: List<Pair<String, String>>):
             Triple<Int, Int, Int> {

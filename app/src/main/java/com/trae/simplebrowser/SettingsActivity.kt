@@ -3,6 +3,8 @@ package com.trae.simplebrowser
 import android.annotation.SuppressLint
 import android.app.DownloadManager
 import android.content.BroadcastReceiver
+import android.content.ClipData
+import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
@@ -578,6 +580,9 @@ class SettingsActivity : AppCompatActivity() {
             val payload = items.filter { it.id in asrSelected }.map { "task" to it.id }
             showBatchAddDialog(payload)
         }
+        binding.asrSelCopy.setOnClickListener { batchCopyTranscripts(share = false) }
+        binding.asrSelShare.setOnClickListener { batchCopyTranscripts(share = true) }
+        binding.asrSelShareLink.setOnClickListener { batchShareLinks() }
         binding.asrSearchInput.addTextChangedListener(object : android.text.TextWatcher {
             override fun beforeTextChanged(s: CharSequence?, a: Int, b: Int, c: Int) {}
             override fun onTextChanged(s: CharSequence?, a: Int, b: Int, c: Int) {}
@@ -799,8 +804,12 @@ class SettingsActivity : AppCompatActivity() {
     private fun renderAsrSelection() {
         binding.asrSelectionBar.visibility = View.VISIBLE
         binding.asrSelCount.text = getString(R.string.folder_selected_count, asrSelected.size)
-        binding.asrSelMove.isEnabled = asrSelected.isNotEmpty()
-        binding.asrSelMove.alpha = if (asrSelected.isEmpty()) 0.5f else 1f
+        // 四个批量操作共用一个可用态：没勾选时全部置灰
+        for (btn in listOf(binding.asrSelMove, binding.asrSelCopy,
+                binding.asrSelShare, binding.asrSelShareLink)) {
+            btn.isEnabled = asrSelected.isNotEmpty()
+            btn.alpha = if (asrSelected.isEmpty()) 0.5f else 1f
+        }
     }
 
     private fun toggleAsrSelection(item: TaskItem) {
@@ -842,84 +851,114 @@ class SettingsActivity : AppCompatActivity() {
 
     /** 多选移入：列出已有文件夹 + 新建项，批量加入（复用单条版的对话框样式）。 */
     private fun showBatchAddDialog(payload: List<Pair<String, String>>) {
+        FolderAddFlow.moveBatch(this, payload) {
+            exitAsrSelection()
+            exitWxSelection()
+            // move 语义：归档后条目离开根目录，刷新两个列表（按参与 kinds 刷新）
+            if (payload.any { it.first == "task" }) loadTasks()
+            if (payload.any { it.first == "wxchat" }) loadWxShares()
+        }
+    }
+
+    // ---------- 多选批量操作：复制全文 / 分享 / 分享链接（作用于勾选的已完成条目） ----------
+
+    /** 勾选中已完成识别的条目（按列表顺序）；一个都没有时提示并返回空。 */
+    private fun selectedDoneTasks(): List<TaskItem> {
+        val done = items.filter { it.id in asrSelected && it.status == "SUCCEEDED" }
+        if (done.isEmpty()) {
+            Toast.makeText(this, R.string.asr_batch_none_done, Toast.LENGTH_SHORT).show()
+        }
+        return done
+    }
+
+    /** 批量复制全文（share=true 时改为系统分享同一份汇总文本）；单条拉取失败不阻断其余。 */
+    private fun batchCopyTranscripts(share: Boolean) {
+        val done = selectedDoneTasks()
+        if (done.isEmpty()) return
+        Toast.makeText(this, getString(R.string.asr_batch_copy_progress, done.size), Toast.LENGTH_SHORT).show()
         Thread {
-            try {
-                val list = AsrClient.listFolders(this)
-                runOnUiThread {
-                    if (isFinishing || isDestroyed) return@runOnUiThread
-                    val options = mutableListOf(getString(R.string.folder_new_and_add))
-                    list.forEach { options.add(it.name) }
-                    AlertDialog.Builder(this)
-                        .setTitle(getString(R.string.folder_move_selected, payload.size))
-                        .setItems(options.toTypedArray()) { _, which ->
-                            if (which == 0) {
-                                promptNewFolderAndAddBatch(payload)
-                            } else {
-                                val f = list[which - 1]
-                                addBatchToFolder(f.folderId, f.name, payload)
-                            }
-                        }
-                        .setNegativeButton(android.R.string.cancel, null)
-                        .show()
+            val ok = ArrayList<Pair<String, String>>(done.size)
+            val failed = ArrayList<String>()
+            for (t in done) {
+                try {
+                    val task = AsrClient.getTask(this, t.id)
+                    ok.add(t.name to AsrTranscriptsJson.plainText(this, task.getJSONObject("result"),
+                        task.optJSONObject("options")))
+                } catch (e: Exception) {
+                    Log.w(logTag, "batch transcript fetch failed: ${t.id}", e)
+                    failed.add(t.name)
                 }
-            } catch (e: Exception) {
-                runOnUiThread {
-                    if (!isFinishing && !isDestroyed) Toast.makeText(this, asrErrorText(e), Toast.LENGTH_LONG).show()
+            }
+            runOnUiThread {
+                if (isFinishing || isDestroyed) return@runOnUiThread
+                val sb = StringBuilder(ok.joinToString("\n\n") { "【${it.first}】\n${it.second}" })
+                if (failed.isNotEmpty()) {
+                    if (sb.isNotEmpty()) sb.append("\n\n")
+                    sb.append(getString(R.string.asr_batch_fetch_failed, failed.size, failed.joinToString("、")))
+                }
+                if (share) {
+                    val send = Intent(Intent.ACTION_SEND).setType("text/plain")
+                        .putExtra(Intent.EXTRA_TEXT, sb.toString())
+                    startActivity(Intent.createChooser(send, getString(R.string.asr_btn_share)))
+                } else {
+                    val cm = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                    cm.setPrimaryClip(ClipData.newPlainText(getString(R.string.asr_result_title), sb.toString()))
+                    Toast.makeText(this, getString(R.string.asr_batch_copied, ok.size), Toast.LENGTH_SHORT).show()
                 }
             }
         }.start()
     }
 
-    private fun promptNewFolderAndAddBatch(payload: List<Pair<String, String>>) {
-        val input = EditText(this).apply {
-            hint = getString(R.string.folder_name_hint)
-            setSingleLine(true)
-        }
-        AlertDialog.Builder(this)
-            .setTitle(R.string.folder_create_title)
-            .setView(input)
-            .setNegativeButton(android.R.string.cancel, null)
-            .setPositiveButton(android.R.string.ok) { _, _ ->
-                val name = input.text.toString().trim()
-                if (name.isEmpty()) return@setPositiveButton
-                Thread {
-                    try {
-                        val fid = AsrClient.createFolder(this, name)
-                        runOnUiThread {
-                            if (isFinishing || isDestroyed) return@runOnUiThread
-                            addBatchToFolder(fid, name, payload)
-                        }
-                    } catch (e: Exception) {
-                        runOnUiThread {
-                            if (!isFinishing && !isDestroyed) Toast.makeText(this, asrErrorText(e), Toast.LENGTH_LONG).show()
-                        }
-                    }
-                }.start()
-            }
-            .show()
-    }
-
-    private fun addBatchToFolder(folderId: String, folderName: String,
-                                 payload: List<Pair<String, String>>) {
+    /** 批量生成分享链接：逐条建分享（参数沿用上次分享的记忆值），汇总成链接清单供复制/分享。 */
+    private fun batchShareLinks() {
+        val done = selectedDoneTasks()
+        if (done.isEmpty()) return
+        Toast.makeText(this, getString(R.string.asr_batch_link_progress, done.size), Toast.LENGTH_SHORT).show()
         Thread {
-            try {
-                val (added, skipped, failed) = AsrClient.folderAddItems(this, folderId, payload)
-                runOnUiThread {
-                    if (isFinishing || isDestroyed) return@runOnUiThread
-                    var msg = getString(R.string.folder_batch_added, folderName, added)
-                    if (skipped > 0) msg += getString(R.string.folder_batch_skipped, skipped)
-                    if (failed > 0) msg += getString(R.string.folder_batch_failed, failed)
-                    Toast.makeText(this, msg, Toast.LENGTH_LONG).show()
-                    exitAsrSelection()
-                    exitWxSelection()
-                    // move 语义：归档后条目离开根目录，刷新两个列表（按参与 kinds 刷新）
-                    if (payload.any { it.first == "task" }) loadTasks()
-                    if (payload.any { it.first == "wxchat" }) loadWxShares()
+            val blocks = ArrayList<String>()
+            val failed = ArrayList<String>()
+            val hours = AppPrefs.getShareValidityHours(this)
+            val opens = AppPrefs.getShareMaxOpens(this)
+            val fmt = SimpleDateFormat("MM-dd HH:mm", Locale.CHINA)
+            for (t in done) {
+                try {
+                    val info = AsrClient.createShare(this, t.id, hours, opens)
+                    val opensText = if (info.maxOpens == 0) "不限打开次数" else "可打开${info.maxOpens}次"
+                    val expire = fmt.format(Date(System.currentTimeMillis() + info.validityHours * 3600_000L))
+                    blocks.add("▪ ${t.name}\n链接：${info.url}\n提取码：${info.pwd}\n有效至 $expire（$opensText）")
+                } catch (e: Exception) {
+                    Log.w(logTag, "batch share link failed: ${t.id}", e)
+                    failed.add(t.name)
                 }
-            } catch (e: Exception) {
-                runOnUiThread {
-                    if (!isFinishing && !isDestroyed) Toast.makeText(this, asrErrorText(e), Toast.LENGTH_LONG).show()
+            }
+            runOnUiThread {
+                if (isFinishing || isDestroyed) return@runOnUiThread
+                if (blocks.isEmpty()) {
+                    Toast.makeText(this,
+                        getString(R.string.asr_failed_prefix) + getString(R.string.asr_batch_link_all_failed),
+                        Toast.LENGTH_LONG).show()
+                    return@runOnUiThread
                 }
+                var msg = getString(R.string.asr_batch_link_header, blocks.size) + "\n\n" +
+                    blocks.joinToString("\n\n")
+                if (failed.isNotEmpty()) {
+                    msg += "\n\n" + getString(R.string.asr_batch_link_failed, failed.size, failed.joinToString("、"))
+                }
+                AlertDialog.Builder(this)
+                    .setTitle(getString(R.string.asr_batch_link_title, blocks.size))
+                    .setMessage(msg)
+                    .setNegativeButton(android.R.string.cancel, null)
+                    .setNeutralButton(R.string.asr_btn_copy_link) { _, _ ->
+                        val cm = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                        cm.setPrimaryClip(ClipData.newPlainText("share", msg))
+                        Toast.makeText(this, R.string.asr_share_copied, Toast.LENGTH_SHORT).show()
+                    }
+                    .setPositiveButton(R.string.asr_btn_share) { _, _ ->
+                        val send = Intent(Intent.ACTION_SEND).setType("text/plain")
+                            .putExtra(Intent.EXTRA_TEXT, msg)
+                        startActivity(Intent.createChooser(send, getString(R.string.asr_btn_share)))
+                    }
+                    .show()
             }
         }.start()
     }
@@ -928,80 +967,10 @@ class SettingsActivity : AppCompatActivity() {
 
     /** 长按记录 →「移入文件夹」：列出已有文件夹 + 新建项，选中即移入。 */
     private fun showAddToFolderDialog(kind: String, ref: String, title: String) {
-        Thread {
-            try {
-                val list = AsrClient.listFolders(this)
-                runOnUiThread {
-                    if (isFinishing || isDestroyed) return@runOnUiThread
-                    val options = mutableListOf(getString(R.string.folder_new_and_add))
-                    list.forEach { options.add(it.name) }
-                    AlertDialog.Builder(this)
-                        .setTitle(getString(R.string.folder_add_to, title))
-                        .setItems(options.toTypedArray()) { _, which ->
-                            if (which == 0) {
-                                promptNewFolderAndAdd(kind, ref)
-                            } else {
-                                val f = list[which - 1]
-                                addToFolder(f.folderId, f.name, kind, ref)
-                            }
-                        }
-                        .setNegativeButton(android.R.string.cancel, null)
-                        .show()
-                }
-            } catch (e: Exception) {
-                runOnUiThread {
-                    if (!isFinishing && !isDestroyed) Toast.makeText(this, asrErrorText(e), Toast.LENGTH_LONG).show()
-                }
-            }
-        }.start()
-    }
-
-    private fun promptNewFolderAndAdd(kind: String, ref: String) {
-        val input = EditText(this).apply {
-            hint = getString(R.string.folder_name_hint)
-            setSingleLine(true)
+        FolderAddFlow.moveSingle(this, kind, ref, title) {
+            // move 语义：归档后条目离开根目录，刷新对应列表让它消失
+            if (kind == "task") loadTasks() else loadWxShares()
         }
-        AlertDialog.Builder(this)
-            .setTitle(R.string.folder_create_title)
-            .setView(input)
-            .setNegativeButton(android.R.string.cancel, null)
-            .setPositiveButton(android.R.string.ok) { _, _ ->
-                val name = input.text.toString().trim()
-                if (name.isEmpty()) return@setPositiveButton
-                Thread {
-                    try {
-                        val fid = AsrClient.createFolder(this, name)
-                        runOnUiThread {
-                            if (isFinishing || isDestroyed) return@runOnUiThread
-                            addToFolder(fid, name, kind, ref)
-                        }
-                    } catch (e: Exception) {
-                        runOnUiThread {
-                            if (!isFinishing && !isDestroyed) Toast.makeText(this, asrErrorText(e), Toast.LENGTH_LONG).show()
-                        }
-                    }
-                }.start()
-            }
-            .show()
-    }
-
-    private fun addToFolder(folderId: String, folderName: String, kind: String, ref: String) {
-        Thread {
-            try {
-                AsrClient.folderAddItem(this, folderId, kind, ref)
-                runOnUiThread {
-                    if (isFinishing || isDestroyed) return@runOnUiThread
-                    Toast.makeText(this, getString(R.string.folder_added, folderName),
-                        Toast.LENGTH_SHORT).show()
-                    // move 语义：归档后条目离开根目录，刷新对应列表让它消失
-                    if (kind == "task") loadTasks() else loadWxShares()
-                }
-            } catch (e: Exception) {
-                runOnUiThread {
-                    if (!isFinishing && !isDestroyed) Toast.makeText(this, asrErrorText(e), Toast.LENGTH_LONG).show()
-                }
-            }
-        }.start()
     }
 
     /** 昵称→真名管理：列出历史分享中出现过的微信昵称，逐个设置真名（参考音视频说话人标注）。 */

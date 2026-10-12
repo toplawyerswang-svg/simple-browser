@@ -159,6 +159,17 @@
     <string name="asr_no_task_id">任务信息缺失，无法生成链接</string>
     <string name="asr_btn_copy_link">复制链接</string>
     <string name="asr_copied">已复制全文</string>
+    <string name="asr_btn_move_folder">移入资料夹</string>
+    <string name="asr_move_folder_no_task">任务信息缺失，无法归入资料夹</string>
+    <string name="asr_batch_none_done">勾选的记录里没有已完成识别的</string>
+    <string name="asr_batch_copy_progress">正在汇总 %1$d 篇转写全文…</string>
+    <string name="asr_batch_copied">已复制 %1$d 篇转写全文</string>
+    <string name="asr_batch_fetch_failed">（其中 %1$d 条获取失败：%2$s）</string>
+    <string name="asr_batch_link_progress">正在生成 %1$d 条分享链接…</string>
+    <string name="asr_batch_link_title">分享链接（%1$d 条）</string>
+    <string name="asr_batch_link_header">【轻舟浏览器】%1$d 条录音分享</string>
+    <string name="asr_batch_link_failed">另有 %1$d 条生成失败：%2$s</string>
+    <string name="asr_batch_link_all_failed">分享链接全部生成失败</string>
     <string name="asr_label_title">标注说话人</string>
     <string name="asr_label_name_hint">输入说话人名字</string>
     <string name="asr_label_confirm">保存</string>
@@ -393,7 +404,6 @@
     <string name="folder_add_action">移入文件夹</string>
     <string name="folder_add_to">移入文件夹（%1$s）</string>
     <string name="folder_new_and_add">＋ 新建文件夹</string>
-    <string name="folder_added">已移入「%1$s」</string>
     <string name="folder_remove_title">移出文件夹</string>
     <string name="folder_remove_confirm">把「%1$s」移出该文件夹？\n记录本身不会被删除。</string>
     <string name="folder_removed">已移出文件夹</string>

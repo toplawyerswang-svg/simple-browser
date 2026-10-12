@@ -509,46 +509,109 @@
                     android:imeOptions="actionSearch"
                     android:textSize="14sp" />
 
-                <!-- 多选操作栏：长按记录选「多选」进入 -->
+                <!-- 多选操作栏：长按记录选「多选」进入；上行计数+完成，下行四个批量操作 -->
                 <LinearLayout
                     android:id="@+id/asr_selection_bar"
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
                     android:layout_marginTop="6dp"
-                    android:gravity="center_vertical"
-                    android:orientation="horizontal"
+                    android:orientation="vertical"
                     android:paddingStart="20dp"
                     android:paddingEnd="12dp"
                     android:visibility="gone">
 
-                    <TextView
-                        android:id="@+id/asr_sel_count"
-                        android:layout_width="0dp"
+                    <LinearLayout
+                        android:layout_width="match_parent"
                         android:layout_height="wrap_content"
-                        android:layout_weight="1"
-                        android:textSize="13sp"
-                        android:textColor="#1565C0" />
+                        android:gravity="center_vertical"
+                        android:orientation="horizontal">
 
-                    <Button
-                        android:id="@+id/asr_sel_move"
-                        android:layout_width="wrap_content"
-                        android:layout_height="wrap_content"
-                        android:minHeight="0dp"
-                        android:paddingStart="12dp"
-                        android:paddingEnd="12dp"
-                        android:textSize="13sp"
-                        android:text="@string/folder_move_to" />
+                        <TextView
+                            android:id="@+id/asr_sel_count"
+                            android:layout_width="0dp"
+                            android:layout_height="wrap_content"
+                            android:layout_weight="1"
+                            android:textSize="13sp"
+                            android:textColor="#1565C0" />
 
-                    <Button
-                        android:id="@+id/asr_sel_done"
-                        android:layout_width="wrap_content"
+                        <Button
+                            android:id="@+id/asr_sel_done"
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:minHeight="0dp"
+                            android:paddingStart="12dp"
+                            android:paddingEnd="12dp"
+                            android:textSize="13sp"
+                            android:text="@string/folder_done" />
+                    </LinearLayout>
+
+                    <LinearLayout
+                        android:layout_width="match_parent"
                         android:layout_height="wrap_content"
-                        android:layout_marginStart="6dp"
-                        android:minHeight="0dp"
-                        android:paddingStart="12dp"
-                        android:paddingEnd="12dp"
-                        android:textSize="13sp"
-                        android:text="@string/folder_done" />
+                        android:layout_marginTop="4dp"
+                        android:orientation="horizontal">
+
+                        <!-- 四按钮并排：归零 MaterialButton 横向 inset，窄屏不换行 -->
+                        <Button
+                            android:id="@+id/asr_sel_move"
+                            android:layout_width="0dp"
+                            android:layout_height="wrap_content"
+                            android:layout_weight="1"
+                            android:layout_marginEnd="3dp"
+                            android:maxLines="1"
+                            android:minHeight="0dp"
+                            android:paddingStart="2dp"
+                            android:paddingEnd="2dp"
+                            android:textSize="12sp"
+                            android:text="@string/folder_move_to"
+                            android:insetLeft="0dp"
+                            android:insetRight="0dp" />
+
+                        <Button
+                            android:id="@+id/asr_sel_copy"
+                            android:layout_width="0dp"
+                            android:layout_height="wrap_content"
+                            android:layout_weight="1"
+                            android:layout_marginHorizontal="3dp"
+                            android:maxLines="1"
+                            android:minHeight="0dp"
+                            android:paddingStart="2dp"
+                            android:paddingEnd="2dp"
+                            android:textSize="12sp"
+                            android:text="@string/asr_btn_copy"
+                            android:insetLeft="0dp"
+                            android:insetRight="0dp" />
+
+                        <Button
+                            android:id="@+id/asr_sel_share"
+                            android:layout_width="0dp"
+                            android:layout_height="wrap_content"
+                            android:layout_weight="1"
+                            android:layout_marginHorizontal="3dp"
+                            android:maxLines="1"
+                            android:minHeight="0dp"
+                            android:paddingStart="2dp"
+                            android:paddingEnd="2dp"
+                            android:textSize="12sp"
+                            android:text="@string/asr_btn_share"
+                            android:insetLeft="0dp"
+                            android:insetRight="0dp" />
+
+                        <Button
+                            android:id="@+id/asr_sel_share_link"
+                            android:layout_width="0dp"
+                            android:layout_height="wrap_content"
+                            android:layout_weight="1"
+                            android:layout_marginStart="3dp"
+                            android:maxLines="1"
+                            android:minHeight="0dp"
+                            android:paddingStart="2dp"
+                            android:paddingEnd="2dp"
+                            android:textSize="12sp"
+                            android:text="@string/asr_btn_share_link"
+                            android:insetLeft="0dp"
+                            android:insetRight="0dp" />
+                    </LinearLayout>
                 </LinearLayout>
 
                 <ListView
