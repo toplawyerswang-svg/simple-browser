@@ -490,6 +490,23 @@
                         android:textColor="#C0C0C0" />
                 </LinearLayout>
 
+                <!-- 关键词搜索：本地过滤当前列表（多选模式下隐藏） -->
+                <EditText
+                    android:id="@+id/asr_search_input"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="6dp"
+                    android:background="#FFFFFF"
+                    android:paddingStart="14dp"
+                    android:paddingEnd="14dp"
+                    android:paddingTop="10dp"
+                    android:paddingBottom="10dp"
+                    android:hint="@string/asr_search_hint"
+                    android:inputType="text"
+                    android:maxLines="1"
+                    android:imeOptions="actionSearch"
+                    android:textSize="14sp" />
+
                 <!-- 多选操作栏：长按记录选「多选」进入 -->
                 <LinearLayout
                     android:id="@+id/asr_selection_bar"
@@ -666,6 +683,23 @@
                         android:textSize="20sp"
                         android:textColor="#C0C0C0" />
                 </LinearLayout>
+
+                <!-- 关键词搜索：本地过滤当前列表（多选模式下隐藏） -->
+                <EditText
+                    android:id="@+id/wxchat_search_input"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="6dp"
+                    android:background="#FFFFFF"
+                    android:paddingStart="14dp"
+                    android:paddingEnd="14dp"
+                    android:paddingTop="10dp"
+                    android:paddingBottom="10dp"
+                    android:hint="@string/wxchat_search_hint"
+                    android:inputType="text"
+                    android:maxLines="1"
+                    android:imeOptions="actionSearch"
+                    android:textSize="14sp" />
 
                 <!-- 多选操作栏：长按记录选「多选」进入 -->
                 <LinearLayout

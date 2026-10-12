@@ -9,7 +9,7 @@
 | 应用名称                      | 轻舟浏览器                                             |
 | applicationId             | `com.trae.lightboat`                              |
 | namespace（Java 包名）        | `com.trae.simplebrowser`                          |
-| versionCode / versionName | 50 / 1.15.3                                       |
+| versionCode / versionName | 51 / 1.15.4                                       |
 | minSdk / targetSdk        | 24 / 34                                           |
 | 旧版共存说明                    | 旧应用"极简浏览器"（`com.trae.simplebrowser`）仍可同机安装，二者互不覆盖 |
 
@@ -474,3 +474,16 @@
 | 关联代码 | server/asrsvc/app.py（_detach_from_other_folders、folder_add_item/items/batch move 语义、folder_list 带 items）；SettingsActivity（refreshFolderIndex/filedTaskRefs/filedWxRefs、loadTasks/loadWxShares 过滤、onResume、addToFolder/addBatchToFolder 刷新）；FolderActivity.showAddItemsPicker；AsrShareOptionsActivity；AppPrefs（share_*）；AsrClient.FolderInfo.items                                                                                     |
 | 验证    | 服务端 curl：加 A→move 到 B（A 归零 B 收下、moved_from_others=1）✓；真机：根目录只显示未归档（录音 8 条、聊天 5 条，已归档的消失）✓、入口行计数 ✓、移出 case-zhang 后条目回根目录（经 onResume 刷新）✓；分享参数：生成用 7天/10次 → 重开弹窗默认 7天/10次 ✓；兼容：Spinner 记忆对录音分享要求页与文件夹弹窗同时生效（同一 AppPrefs）                                                                 |
 | 已知边界 | move 语义上线的旧双重归属数据不自动收敛（如「微信-上海象屿符光宇」同时在 pc 和 case-zhang）：两处都显示、根目录不显示；用户从任一夹移出/下次移动时自动收敛，或手动清理                                                                                                          |
+
+
+### F-36 两个管理列表支持关键词搜索
+
+| 项目    | 内容                                                                                                                                                                     |
+| ----- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 需求    | 「音视频识别」「聊天记录分享」两个列表支持关键词搜索（2026-10-12 用户提出）                                                                                                                      |
+| 形式    | 每个页签列表上方一个搜索框（白底，hint「搜索录音名称」/「搜索标题或成员」），输入即实时过滤（TextWatcher，无需按钮）；多选模式下搜索框隐藏、退出多选恢复                                                                          |
+| 匹配范围 | 音频：录音名称（display_name）；聊天记录：标题 + 成员（微信昵称/已填真名）；均不区分大小写                                                                                                                  |
+| 空态   | 有数据但搜索无匹配 →「无匹配"关键词"的结果，换个关键词试试」；无数据仍显示原有原因文案（全部归档/暂无记录）——空态显隐与文案统一收敛到 renderAsrEmpty/renderWxEmpty（列表加载/删除/搜索三处共用）                                                       |
+| 实现   | 纯本地过滤（列表数据本就全量拉自服务端，不打服务端）；asrFiltered()/wxFiltered() 过滤视图，适配器 count/getItem/点击/长按全部走过滤视图；搜索词不持久化（进页即清）                                                                  |
+| 关联代码 | SettingsActivity（asrQuery/wxQuery、asrFiltered/wxFiltered、renderAsrEmpty/renderWxEmpty、两个 TextWatcher、enter/exitSelection 隐藏搜索框）、activity_settings.xml（asr/wxchat_search_input）、strings 3 条                                            |
+| 验证    | 构建+装机 v1.15.4/51；真机交互冒烟因用户正使用手机（前台企业微信）按纪律中止，未逐字验证——过滤/空态/多选隐藏请按「设置→音视频识别→搜索框输入录音名片段；聊天记录分享→输入成员名」自查；逻辑为纯本地字符串过滤，风险低                                                                 |

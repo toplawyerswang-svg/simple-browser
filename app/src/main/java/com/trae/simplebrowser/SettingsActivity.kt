@@ -100,6 +100,44 @@ class SettingsActivity : AppCompatActivity() {
     private var filedWxRefs = setOf<String>()
     private var folderCount = 0
 
+    // ---------- 关键词搜索（本地实时过滤当前列表） ----------
+    private var asrQuery = ""
+    private var wxQuery = ""
+
+    private fun asrFiltered(): List<TaskItem> =
+        if (asrQuery.isBlank()) items
+        else items.filter { it.name.contains(asrQuery, ignoreCase = true) }
+
+    private fun wxFiltered(): List<WxShareItem> =
+        if (wxQuery.isBlank()) wxShares
+        else wxShares.filter {
+            it.title.contains(wxQuery, ignoreCase = true) ||
+                it.participantsDisplay.any { p -> p.contains(wxQuery, ignoreCase = true) }
+        }
+
+    /** 空态：无数据时给原因（全部归档/暂无记录）；有数据但搜索无匹配时提示换关键词。 */
+    private fun renderAsrEmpty() {
+        val visible = asrFiltered().isEmpty()
+        binding.asrList.visibility = if (visible) View.GONE else View.VISIBLE
+        binding.asrEmpty.visibility = if (visible) View.VISIBLE else View.GONE
+        binding.asrEmpty.text = when {
+            items.isEmpty() && filedTaskRefs.isNotEmpty() -> getString(R.string.asr_all_filed)
+            items.isEmpty() -> getString(R.string.asr_manage_empty)
+            else -> getString(R.string.search_no_match, asrQuery)
+        }
+    }
+
+    private fun renderWxEmpty() {
+        val visible = wxFiltered().isEmpty()
+        binding.wxchatList.visibility = if (visible) View.GONE else View.VISIBLE
+        binding.wxchatEmpty.visibility = if (visible) View.VISIBLE else View.GONE
+        binding.wxchatEmpty.text = when {
+            wxShares.isEmpty() && filedWxRefs.isNotEmpty() -> getString(R.string.wxchat_all_filed)
+            wxShares.isEmpty() -> getString(R.string.wxchat_manage_empty)
+            else -> getString(R.string.search_no_match, wxQuery)
+        }
+    }
+
     // ---------- 聊天记录分享管理状态 ----------
     private data class WxShareItem(
         val shareId: String,
@@ -470,13 +508,13 @@ class SettingsActivity : AppCompatActivity() {
         asrEmptyView = binding.asrEmpty
 
         taskAdapter = object : BaseAdapter() {
-            override fun getCount(): Int = items.size
-            override fun getItem(position: Int): Any = items[position]
+            override fun getCount(): Int = asrFiltered().size
+            override fun getItem(position: Int): Any = asrFiltered()[position]
             override fun getItemId(position: Int): Long = position.toLong()
             override fun getView(position: Int, convertView: View?, parent: ViewGroup): View {
                 val v = convertView ?: LayoutInflater.from(this@SettingsActivity)
                     .inflate(R.layout.asr_task_item, parent, false)
-                val item = items[position]
+                val item = asrFiltered()[position]
                 v.findViewById<TextView>(R.id.item_name).text = item.name
                 v.findViewById<TextView>(R.id.item_meta).text = metaText(item)
                 val check = v.findViewById<CheckBox>(R.id.item_check)
@@ -501,11 +539,11 @@ class SettingsActivity : AppCompatActivity() {
         }
         asrListView.adapter = taskAdapter
         asrListView.setOnItemClickListener { _, _, position, _ ->
-            val item = items[position]
+            val item = asrFiltered()[position]
             if (asrSelectMode) toggleAsrSelection(item) else openTask(item)
         }
         asrListView.setOnItemLongClickListener { _, _, position, _ ->
-            val item = items[position]
+            val item = asrFiltered()[position]
             if (asrSelectMode) {
                 toggleAsrSelection(item)
                 return@setOnItemLongClickListener true
@@ -540,6 +578,15 @@ class SettingsActivity : AppCompatActivity() {
             val payload = items.filter { it.id in asrSelected }.map { "task" to it.id }
             showBatchAddDialog(payload)
         }
+        binding.asrSearchInput.addTextChangedListener(object : android.text.TextWatcher {
+            override fun beforeTextChanged(s: CharSequence?, a: Int, b: Int, c: Int) {}
+            override fun onTextChanged(s: CharSequence?, a: Int, b: Int, c: Int) {}
+            override fun afterTextChanged(s: android.text.Editable?) {
+                asrQuery = s?.toString().orEmpty()
+                taskAdapter.notifyDataSetChanged()
+                renderAsrEmpty()
+            }
+        })
 
         binding.asrTokenVerifyBtn.setOnClickListener {
             val token = asrTokenInput.text.toString().trim()
@@ -622,13 +669,13 @@ class SettingsActivity : AppCompatActivity() {
         wxEmptyView = binding.wxchatEmpty
 
         wxAdapter = object : BaseAdapter() {
-            override fun getCount(): Int = wxShares.size
-            override fun getItem(position: Int): Any = wxShares[position]
+            override fun getCount(): Int = wxFiltered().size
+            override fun getItem(position: Int): Any = wxFiltered()[position]
             override fun getItemId(position: Int): Long = position.toLong()
             override fun getView(position: Int, convertView: View?, parent: ViewGroup): View {
                 val v = convertView ?: LayoutInflater.from(this@SettingsActivity)
                     .inflate(R.layout.wx_share_item, parent, false)
-                val item = wxShares[position]
+                val item = wxFiltered()[position]
                 val check = v.findViewById<CheckBox>(R.id.item_check)
                 check.visibility = if (wxSelectMode) View.VISIBLE else View.GONE
                 check.isChecked = item.shareId in wxSelected
@@ -674,11 +721,11 @@ class SettingsActivity : AppCompatActivity() {
         }
         wxListView.adapter = wxAdapter
         wxListView.setOnItemClickListener { _, _, position, _ ->
-            val item = wxShares[position]
+            val item = wxFiltered()[position]
             if (wxSelectMode) toggleWxSelection(item) else openWxShare(item)
         }
         wxListView.setOnItemLongClickListener { _, _, position, _ ->
-            val item = wxShares[position]
+            val item = wxFiltered()[position]
             if (wxSelectMode) {
                 toggleWxSelection(item)
                 return@setOnItemLongClickListener true
@@ -715,6 +762,15 @@ class SettingsActivity : AppCompatActivity() {
             val payload = wxShares.filter { it.shareId in wxSelected }.map { "wxchat" to it.shareId }
             showBatchAddDialog(payload)
         }
+        binding.wxchatSearchInput.addTextChangedListener(object : android.text.TextWatcher {
+            override fun beforeTextChanged(s: CharSequence?, a: Int, b: Int, c: Int) {}
+            override fun onTextChanged(s: CharSequence?, a: Int, b: Int, c: Int) {}
+            override fun afterTextChanged(s: android.text.Editable?) {
+                wxQuery = s?.toString().orEmpty()
+                wxAdapter.notifyDataSetChanged()
+                renderWxEmpty()
+            }
+        })
 
         binding.wxchatRefresh.setOnClickListener { loadWxShares() }
         binding.wxchatNamesBtn.setOnClickListener { showNameMappingDialog() }
@@ -726,6 +782,7 @@ class SettingsActivity : AppCompatActivity() {
         asrSelectMode = true
         asrSelected.clear()
         renderAsrSelection()
+        binding.asrSearchInput.visibility = View.GONE   // 多选时不与搜索混用
         taskAdapter.notifyDataSetChanged()
     }
 
@@ -734,6 +791,7 @@ class SettingsActivity : AppCompatActivity() {
         asrSelected.clear()
         if (!isFinishing && !isDestroyed) {
             binding.asrSelectionBar.visibility = View.GONE
+            binding.asrSearchInput.visibility = View.VISIBLE
             taskAdapter.notifyDataSetChanged()
         }
     }
@@ -755,6 +813,7 @@ class SettingsActivity : AppCompatActivity() {
         wxSelectMode = true
         wxSelected.clear()
         renderWxSelection()
+        binding.wxchatSearchInput.visibility = View.GONE
         wxAdapter.notifyDataSetChanged()
     }
 
@@ -763,6 +822,7 @@ class SettingsActivity : AppCompatActivity() {
         wxSelected.clear()
         if (!isFinishing && !isDestroyed) {
             binding.wxchatSelectionBar.visibility = View.GONE
+            binding.wxchatSearchInput.visibility = View.VISIBLE
             wxAdapter.notifyDataSetChanged()
         }
     }
@@ -1095,10 +1155,7 @@ class SettingsActivity : AppCompatActivity() {
                         renderWxSelection()
                     }
                     wxAdapter.notifyDataSetChanged()
-                    wxListView.visibility = if (wxShares.isEmpty()) View.GONE else View.VISIBLE
-                    wxEmptyView.text = if (wxShares.isEmpty() && filedWxRefs.isNotEmpty())
-                        getString(R.string.wxchat_all_filed) else getString(R.string.wxchat_manage_empty)
-                    wxEmptyView.visibility = if (wxShares.isEmpty()) View.VISIBLE else View.GONE
+                    renderWxEmpty()
                 }
             } catch (e: AsrAuthException) {
                 runOnUiThread {
@@ -1294,10 +1351,7 @@ class SettingsActivity : AppCompatActivity() {
                         renderAsrSelection()
                     }
                     taskAdapter.notifyDataSetChanged()
-                    asrListView.visibility = if (items.isEmpty()) View.GONE else View.VISIBLE
-                    asrEmptyView.text = if (items.isEmpty() && filed.isNotEmpty())
-                        getString(R.string.asr_all_filed) else getString(R.string.asr_manage_empty)
-                    asrEmptyView.visibility = if (items.isEmpty()) View.VISIBLE else View.GONE
+                    renderAsrEmpty()
                 }
                 asrLoaded = true
             } catch (e: AsrAuthException) {
@@ -1421,8 +1475,7 @@ class SettingsActivity : AppCompatActivity() {
                             if (playingTaskId == item.id) stopPlayback()
                             items.removeAll { it.id == item.id }
                             taskAdapter.notifyDataSetChanged()
-                            asrListView.visibility = if (items.isEmpty()) View.GONE else View.VISIBLE
-                            asrEmptyView.visibility = if (items.isEmpty()) View.VISIBLE else View.GONE
+                            renderAsrEmpty()
                             Toast.makeText(this, R.string.asr_deleted, Toast.LENGTH_SHORT).show()
                         }
                     } catch (e: AsrAuthException) {
