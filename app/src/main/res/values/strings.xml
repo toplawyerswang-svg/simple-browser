@@ -431,5 +431,6 @@
 已全部归入资料夹，点上方「资料夹」查看</string>
     <string name="asr_search_hint">🔍 搜索录音名称</string>
     <string name="wxchat_search_hint">🔍 搜索标题或成员</string>
+    <string name="folder_search_hint">🔍 搜索文件夹</string>
     <string name="search_no_match">无匹配「%1$s」的结果，换个关键词试试</string>
 </resources>

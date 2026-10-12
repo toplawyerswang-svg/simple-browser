@@ -86,6 +86,27 @@
                 android:contentDescription="@string/folder_create_title" />
         </LinearLayout>
 
+        <!-- 关键词搜索：仅列表态显示（按文件夹名过滤） -->
+        <EditText
+            android:id="@+id/folder_search_input"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="8dp"
+            android:layout_marginStart="12dp"
+            android:layout_marginEnd="12dp"
+            android:background="@drawable/bg_search_input"
+            android:paddingStart="14dp"
+            android:paddingEnd="14dp"
+            android:paddingTop="10dp"
+            android:paddingBottom="10dp"
+            android:hint="@string/folder_search_hint"
+            android:textColor="#212121"
+            android:textColorHint="#8A8A8A"
+            android:inputType="text"
+            android:maxLines="1"
+            android:imeOptions="actionSearch"
+            android:textSize="14sp" />
+
         <ListView
             android:id="@+id/folder_list"
             android:layout_width="match_parent"

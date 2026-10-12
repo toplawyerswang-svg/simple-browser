@@ -39,6 +39,13 @@ class FolderActivity : AppCompatActivity() {
     private var detail: AsrClient.FolderDetail? = null
     private val adapter = FolderAdapter()
 
+    // 列表态关键词搜索（按文件夹名过滤，本地实时）
+    private var folderQuery = ""
+
+    private fun folderFiltered(): List<AsrClient.FolderInfo> =
+        if (folderQuery.isBlank()) folders
+        else folders.filter { it.name.contains(folderQuery, ignoreCase = true) }
+
     private var previewWebView: WebView? = null
 
     private val ttlValues = intArrayOf(1, 24, 72, 168, 720)
@@ -59,19 +66,30 @@ class FolderActivity : AppCompatActivity() {
         binding.folderList.adapter = adapter
         binding.folderList.setOnItemClickListener { _, _, pos, _ ->
             if (detail == null) {
-                folders.getOrNull(pos)?.let(::openFolder)
+                folderFiltered().getOrNull(pos)?.let(::openFolder)
             } else {
                 detail?.entries?.getOrNull(pos)?.let(::openEntry)
             }
         }
         binding.folderList.setOnItemLongClickListener { _, _, pos, _ ->
             if (detail == null) {
-                folders.getOrNull(pos)?.let(::showFolderMenu)
+                folderFiltered().getOrNull(pos)?.let(::showFolderMenu)
             } else {
                 detail?.entries?.getOrNull(pos)?.let(::confirmRemoveEntry)
             }
             true
         }
+        binding.folderSearchInput.addTextChangedListener(object : android.text.TextWatcher {
+            override fun beforeTextChanged(s: CharSequence?, a: Int, b: Int, c: Int) {}
+            override fun onTextChanged(s: CharSequence?, a: Int, b: Int, c: Int) {}
+            override fun afterTextChanged(s: android.text.Editable?) {
+                folderQuery = s?.toString().orEmpty()
+                if (detail == null) {
+                    adapter.notifyDataSetChanged()
+                    renderFolderEmpty()
+                }
+            }
+        })
         loadList()
     }
 
@@ -98,13 +116,23 @@ class FolderActivity : AppCompatActivity() {
                     if (isFinishing || isDestroyed) return@runOnUiThread
                     folders = list
                     adapter.notifyDataSetChanged()
-                    binding.folderList.visibility = if (list.isEmpty()) View.GONE else View.VISIBLE
-                    binding.folderEmptyHint.visibility = if (list.isEmpty()) View.VISIBLE else View.GONE
+                    renderFolderEmpty()
                 }
             } catch (e: Exception) {
                 uiError(e)
             }
         }.start()
+    }
+
+    /** 列表态空态：无文件夹给引导文案；有数据但搜索无匹配给换词提示。 */
+    private fun renderFolderEmpty() {
+        val visible = folderFiltered().isEmpty()
+        binding.folderList.visibility = if (visible) View.GONE else View.VISIBLE
+        binding.folderEmptyHint.visibility = if (visible) View.VISIBLE else View.GONE
+        binding.folderEmptyHint.text = when {
+            folders.isEmpty() -> getString(R.string.folder_list_empty)
+            else -> getString(R.string.search_no_match, folderQuery)
+        }
     }
 
     private fun loadDetail() {
@@ -137,6 +165,7 @@ class FolderActivity : AppCompatActivity() {
             binding.btnNew.visibility = View.VISIBLE
             binding.btnShare.visibility = View.GONE
             binding.btnMore.visibility = View.GONE
+            binding.folderSearchInput.visibility = View.VISIBLE
             binding.folderEmptyHint.text = getString(R.string.folder_list_empty)
         } else {
             binding.tvTitle.text = d.name
@@ -145,6 +174,7 @@ class FolderActivity : AppCompatActivity() {
             binding.btnNew.visibility = View.VISIBLE
             binding.btnShare.visibility = View.VISIBLE
             binding.btnMore.visibility = View.VISIBLE
+            binding.folderSearchInput.visibility = View.GONE
         }
     }
 
@@ -160,10 +190,10 @@ class FolderActivity : AppCompatActivity() {
 
     private inner class FolderAdapter : BaseAdapter() {
         override fun getCount(): Int =
-            if (detail == null) folders.size else (detail?.entries?.size ?: 0)
+            if (detail == null) folderFiltered().size else (detail?.entries?.size ?: 0)
 
         override fun getItem(position: Int): Any =
-            if (detail == null) folders[position] else detail!!.entries[position]
+            if (detail == null) folderFiltered()[position] else detail!!.entries[position]
 
         override fun getItemId(position: Int): Long = position.toLong()
 
@@ -175,7 +205,7 @@ class FolderActivity : AppCompatActivity() {
             if (detail == null) {
                 val v = convertView ?: LayoutInflater.from(this@FolderActivity)
                     .inflate(R.layout.folder_list_item, parent, false)
-                val f = folders[position]
+                val f = folderFiltered()[position]
                 v.findViewById<TextView>(R.id.item_name).text = f.name
                 v.findViewById<TextView>(R.id.item_meta).text =
                     getString(R.string.folder_item_count, f.itemCount)
