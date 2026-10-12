@@ -36,6 +36,7 @@ import androidx.core.content.ContextCompat
 import com.google.android.material.tabs.TabLayout
 import org.json.JSONObject
 import com.trae.simplebrowser.core.AdBlockEngine
+import com.trae.simplebrowser.core.AsrTranscripts
 import com.trae.simplebrowser.core.DownloadKind
 import com.trae.simplebrowser.core.DownloadRecord
 import com.trae.simplebrowser.core.DownloadStatus
@@ -891,7 +892,7 @@ class SettingsActivity : AppCompatActivity() {
             }
             runOnUiThread {
                 if (isFinishing || isDestroyed) return@runOnUiThread
-                val sb = StringBuilder(ok.joinToString("\n\n") { "【${it.first}】\n${it.second}" })
+                val sb = StringBuilder(AsrTranscripts.joinDocuments(ok))
                 if (failed.isNotEmpty()) {
                     if (sb.isNotEmpty()) sb.append("\n\n")
                     sb.append(getString(R.string.asr_batch_fetch_failed, failed.size, failed.joinToString("、")))
@@ -913,54 +914,7 @@ class SettingsActivity : AppCompatActivity() {
     private fun batchShareLinks() {
         val done = selectedDoneTasks()
         if (done.isEmpty()) return
-        Toast.makeText(this, getString(R.string.asr_batch_link_progress, done.size), Toast.LENGTH_SHORT).show()
-        Thread {
-            val blocks = ArrayList<String>()
-            val failed = ArrayList<String>()
-            val hours = AppPrefs.getShareValidityHours(this)
-            val opens = AppPrefs.getShareMaxOpens(this)
-            val fmt = SimpleDateFormat("MM-dd HH:mm", Locale.CHINA)
-            for (t in done) {
-                try {
-                    val info = AsrClient.createShare(this, t.id, hours, opens)
-                    val opensText = if (info.maxOpens == 0) "不限打开次数" else "可打开${info.maxOpens}次"
-                    val expire = fmt.format(Date(System.currentTimeMillis() + info.validityHours * 3600_000L))
-                    blocks.add("▪ ${t.name}\n链接：${info.url}\n提取码：${info.pwd}\n有效至 $expire（$opensText）")
-                } catch (e: Exception) {
-                    Log.w(logTag, "batch share link failed: ${t.id}", e)
-                    failed.add(t.name)
-                }
-            }
-            runOnUiThread {
-                if (isFinishing || isDestroyed) return@runOnUiThread
-                if (blocks.isEmpty()) {
-                    Toast.makeText(this,
-                        getString(R.string.asr_failed_prefix) + getString(R.string.asr_batch_link_all_failed),
-                        Toast.LENGTH_LONG).show()
-                    return@runOnUiThread
-                }
-                var msg = getString(R.string.asr_batch_link_header, blocks.size) + "\n\n" +
-                    blocks.joinToString("\n\n")
-                if (failed.isNotEmpty()) {
-                    msg += "\n\n" + getString(R.string.asr_batch_link_failed, failed.size, failed.joinToString("、"))
-                }
-                AlertDialog.Builder(this)
-                    .setTitle(getString(R.string.asr_batch_link_title, blocks.size))
-                    .setMessage(msg)
-                    .setNegativeButton(android.R.string.cancel, null)
-                    .setNeutralButton(R.string.asr_btn_copy_link) { _, _ ->
-                        val cm = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-                        cm.setPrimaryClip(ClipData.newPlainText("share", msg))
-                        Toast.makeText(this, R.string.asr_share_copied, Toast.LENGTH_SHORT).show()
-                    }
-                    .setPositiveButton(R.string.asr_btn_share) { _, _ ->
-                        val send = Intent(Intent.ACTION_SEND).setType("text/plain")
-                            .putExtra(Intent.EXTRA_TEXT, msg)
-                        startActivity(Intent.createChooser(send, getString(R.string.asr_btn_share)))
-                    }
-                    .show()
-            }
-        }.start()
+        AsrLinkBatch.generateAndShow(this, done.map { it.name to it.id })
     }
 
     // ---------- 资料夹：移入对话框（新建或选已有，录音与聊天记录共用一套文件夹）

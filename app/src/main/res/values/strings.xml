@@ -162,6 +162,9 @@
     <string name="asr_btn_move_folder">移入资料夹</string>
     <string name="asr_move_folder_no_task">任务信息缺失，无法归入资料夹</string>
     <string name="asr_batch_none_done">勾选的记录里没有已完成识别的</string>
+    <string name="asr_batch_page_title">转写完成（%1$d 个文件）</string>
+    <string name="asr_batch_page_failed_note">另有 %1$d 个转写失败</string>
+    <string name="asr_batch_item_done">转写完成</string>
     <string name="asr_batch_copy_progress">正在汇总 %1$d 篇转写全文…</string>
     <string name="asr_batch_copied">已复制 %1$d 篇转写全文</string>
     <string name="asr_batch_fetch_failed">（其中 %1$d 条获取失败：%2$s）</string>

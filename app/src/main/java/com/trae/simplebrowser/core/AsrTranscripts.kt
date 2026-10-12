@@ -32,4 +32,8 @@ object AsrTranscripts {
         }
         return sb.toString().trim()
     }
+
+    /** 多篇转写拼篇：每篇以【文件名】抬头，篇间空行分隔（批量复制与系统分享共用同一格式）。 */
+    fun joinDocuments(docs: List<Pair<String, String>>): String =
+        docs.joinToString("\n\n") { "【${it.first}】\n${it.second}" }
 }

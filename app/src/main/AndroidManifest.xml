@@ -48,6 +48,11 @@
             android:screenOrientation="portrait" />
 
         <activity
+            android:name=".AsrBatchResultActivity"
+            android:exported="false"
+            android:screenOrientation="portrait" />
+
+        <activity
             android:name=".AsrShareOptionsActivity"
             android:exported="false"
             android:screenOrientation="portrait" />

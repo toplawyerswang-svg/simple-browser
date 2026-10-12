@@ -54,6 +54,19 @@ object AsrShareFlow {
     private val pendingResults = ArrayDeque<Success>()
     private val pendingFailures = ArrayDeque<String>()
 
+    /** 不在前台期间完成的批次的失败数（随结果一起在回前台时呈现）。 */
+    private var pendingFailedCount = 0
+
+    private fun recordFailure(detail: String) {
+        synchronized(pendingFailures) { pendingFailures.add(detail) }
+    }
+
+    private fun consumeFailures(): List<String> = synchronized(pendingFailures) {
+        val list = pendingFailures.toList()
+        pendingFailures.clear()
+        list
+    }
+
     /** 已知音视频扩展名到 MIME 的映射：发送方不标类型时按显示名兜底识别。 */
     private val EXT_MIME = mapOf(
         "m4a" to "audio/mp4", "mp3" to "audio/mpeg", "wav" to "audio/x-wav", "aac" to "audio/aac",
@@ -109,22 +122,23 @@ object AsrShareFlow {
 
     /** 处理整批分享的音视频（在服务的工作线程上逐个推进）。 */
     fun runBatch(context: Context, items: List<MediaItem>, opts: AsrClient.Options) {
-        runBatch(context, items, opts, done = 0, failed = 0)
+        runBatch(context, items, opts, ArrayList(), done = 0, failed = 0)
     }
 
-    /** 递归推进队列；done/failed 是本批次已完成的计数，令牌失效时重新核验后从中断处继续。 */
+    /** 递归推进队列；done/failed 是本批次已完成的计数，令牌失效时重新核验后从中断处继续。
+     *  成功结果先全部收进 collected，整批结束后统一呈现（单文件开详情页，多文件开批量结果页）。 */
     private fun runBatch(context: Context, items: List<MediaItem>, opts: AsrClient.Options,
-                         done: Int, failed: Int) {
+                         collected: ArrayList<Success>, done: Int, failed: Int) {
         if (items.isEmpty()) {
-            finishBatch(context, done, failed)
+            finishBatch(context, collected, done, failed)
             return
         }
         val item = items.first()
         val rest = items.drop(1)
         val ordinal = done + failed + 1
         try {
-            deliverResult(processOne(context, item, opts, items.size, ordinal))
-            runBatch(context, rest, opts, done + 1, failed)
+            collected.add(processOne(context, item, opts, items.size, ordinal))
+            runBatch(context, rest, opts, collected, done + 1, failed)
         } catch (e: AsrAuthException) {
             // 令牌失效：清除后弹输入框重新核验，通过后继续当前文件及余下文件
             AppPrefs.clearAsrAuth(context)
@@ -132,18 +146,18 @@ object AsrShareFlow {
             if (activity == null || activity.isFinishing) {
                 // 页面已不在，无法重新核验：本项记为失败，继续余下文件
                 recordFailure(describe(context, item, e))
-                runBatch(context, rest, opts, done, failed + 1)
+                runBatch(context, rest, opts, collected, done, failed + 1)
                 return
             }
             AsrAuth.promptTokenInput(activity) {
                 Thread {
                     try {
-                        deliverResult(processOne(context, item, opts, items.size, ordinal))
-                        runBatch(context, rest, opts, done + 1, failed)
+                        collected.add(processOne(context, item, opts, items.size, ordinal))
+                        runBatch(context, rest, opts, collected, done + 1, failed)
                     } catch (retry: Exception) {
                         Log.e(TAG, "asr process failed", retry)
                         recordFailure(describe(context, item, retry))
-                        runBatch(context, rest, opts, done, failed + 1)
+                        runBatch(context, rest, opts, collected, done, failed + 1)
                     }
                 }.start()
             }
@@ -151,32 +165,13 @@ object AsrShareFlow {
         } catch (e: Exception) {
             Log.e(TAG, "asr process failed", e)
             recordFailure(describe(context, item, e))
-            runBatch(context, rest, opts, done, failed + 1)
+            runBatch(context, rest, opts, collected, done, failed + 1)
         }
     }
 
-    /** 处理完成的一项：页面在前台直接打开结果页，否则排队等回前台。 */
-    private fun deliverResult(s: Success) {
-        val activity = uiRef.get()
-        if (activityResumed && activity != null && !activity.isFinishing) {
-            openResult(activity, s)
-        } else {
-            synchronized(pendingResults) { pendingResults.add(s) }
-        }
-    }
-
-    private fun recordFailure(detail: String) {
-        synchronized(pendingFailures) { pendingFailures.add(detail) }
-    }
-
-    private fun consumeFailures(): List<String> = synchronized(pendingFailures) {
-        val list = pendingFailures.toList()
-        pendingFailures.clear()
-        list
-    }
-
-    /** 批次收尾：隐藏悬浮条、发完成通知；失败项前台直接弹汇总，否则留在队列等回前台。 */
-    private fun finishBatch(context: Context, done: Int, failed: Int) {
+    /** 批次收尾：隐藏悬浮条、发完成通知；结果整批呈现——
+     *  页面在前台直接开（单文件详情页/多文件批量结果页），不在前台排队等回前台。 */
+    private fun finishBatch(context: Context, collected: List<Success>, done: Int, failed: Int) {
         uiRef.get()?.let { activity ->
             fireUi(activity) {
                 activity.findViewById<TextView>(R.id.asrProgressPill)?.visibility = View.GONE
@@ -186,23 +181,51 @@ object AsrShareFlow {
         if (done > 0) {
             postResultNotification(context, done, lastSuccessName)
         }
-        if (failed > 0) {
-            val activity = uiRef.get()
-            if (activityResumed && activity != null && !activity.isFinishing) {
+        val activity = uiRef.get()
+        val foreground = activityResumed && activity != null && !activity.isFinishing
+        if (foreground && activity != null) {
+            if (collected.isNotEmpty()) presentResults(activity, collected, failed)
+            if (failed > 0) {
                 val failures = consumeFailures()
                 if (failures.isNotEmpty()) showFailureSummary(activity, failures)
             }
+        } else if (collected.isNotEmpty() || failed > 0) {
+            synchronized(pendingResults) { pendingResults.addAll(collected) }
+            pendingFailedCount += failed
         }
     }
 
-    /** MainActivity 回前台时调用：把后台期间完成的结果页打开、失败项弹汇总。 */
+    /** 呈现一批结果：单文件开详情页，多文件开批量结果页（失败数随行提示）。 */
+    private fun presentResults(activity: MainActivity, results: List<Success>, failed: Int) {
+        if (results.size == 1) {
+            openResult(activity, results[0])
+        } else {
+            openBatch(activity, results, failed)
+        }
+    }
+
+    private fun openBatch(activity: MainActivity, results: List<Success>, failed: Int) {
+        if (activity.isFinishing) return
+        val it = Intent(activity, AsrBatchResultActivity::class.java)
+            .putStringArrayListExtra("result_paths", ArrayList(results.map { r -> r.resultFile.absolutePath }))
+            .putStringArrayListExtra("display_names", ArrayList(results.map { r -> r.displayName }))
+            .putStringArrayListExtra("task_ids", ArrayList(results.map { r -> r.taskId }))
+            .putStringArrayListExtra("options_json",
+                ArrayList(results.map { r -> r.options?.toString().orEmpty() }))
+            .putExtra("failed_count", failed)
+        activity.startActivity(it)
+    }
+
+    /** MainActivity 回前台时调用：把后台期间完成的结果统一呈现、失败项弹汇总。 */
     fun drainPending(activity: MainActivity) {
         val results = synchronized(pendingResults) {
             val list = pendingResults.toList()
             pendingResults.clear()
             list
         }
-        for (s in results) openResult(activity, s)
+        val failed = pendingFailedCount
+        pendingFailedCount = 0
+        if (results.isNotEmpty()) presentResults(activity, results, failed)
         if (failuresVisibleAt(activity)) {
             val failures = consumeFailures()
             if (failures.isNotEmpty()) showFailureSummary(activity, failures)

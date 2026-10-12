@@ -9,7 +9,7 @@
 | 应用名称                      | 轻舟浏览器                                             |
 | applicationId             | `com.trae.lightboat`                              |
 | namespace（Java 包名）        | `com.trae.simplebrowser`                          |
-| versionCode / versionName | 54 / 1.15.7                                       |
+| versionCode / versionName | 55 / 1.15.8                                       |
 | minSdk / targetSdk        | 24 / 34                                           |
 | 旧版共存说明                    | 旧应用"极简浏览器"（`com.trae.simplebrowser`）仍可同机安装，二者互不覆盖 |
 
@@ -500,3 +500,15 @@
 | 关联代码 | AsrResultActivity（moveToFolder/resultJson/buildPlainFullText）、SettingsActivity（selectedDoneTasks/batchCopyTranscripts/batchShareLinks/showAddToFolderDialog/showBatchAddDialog 委托/renderAsrSelection）、activity_asr_result.xml、activity_settings.xml（asr_selection_bar 两行）、strings 12 条、app/build.gradle.kts |
 | 单测    | AsrTranscriptsTest 6 例（具名+回退编号、无说话人前缀、无时间戳、空名回退+非0起点编号、空段落、去空白）✓；全量纯函数回归 128 例 OK（JUnitCore 直跑，含 zxing/stdlib classpath 补齐）✓ |
 | 验证    | v1.15.7/54 已 `install -r` 装机（dumpsys 确认 versionCode=54）；冷启动/多 Activity 启动零 FATAL（logcat -b crash 空、dropbox 无崩溃记录）、SettingsActivity 前台运行正常（系统日志佐证）。**元素级点验受限于真机**：该 ROM a11y dump 冻结旧树 + screencap 黑帧 + 冒烟期间用户共机使用，详情页四按钮/多选栏四按钮未逐一点验，留给用户按交付清单自查；冒烟期间唯一副作用=取消了一个「添加到主屏幕」弹窗（未装图标） |
+
+### F-38 多文件分享：整批转完统一出结果 + 批量结果页（同款四按钮管一批）
+
+| 项目    | 内容                                                                                                                                                                                                                                                               |
+| ----- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 需求    | 多文件分享转写时「仅部分完成就逐个跳出结果页」→ 应整批全部转完才出结果，并对一整批结果执行四个按钮操作（2026-10-12 用户反馈）                                                                                                                                                                       |
+| 流程改造 | AsrShareFlow 不再逐个 deliverResult：成功结果收进 collected，批次收尾统一呈现——单文件照旧直接开详情页；**多文件开新批量结果页**；应用在后台完成时整批排队（含失败数），MainActivity 回前台 drainPending 统一呈现。进度悬浮条/通知/失败汇总口径不变                                                                                           |
+| 批量结果页 | 新增 AsrBatchResultActivity（非导出，portrait）：标题「转写完成（N 个文件）」+ 红字「另有 M 个转写失败」（如有）；条目=文件名+时长/选项摘要（后台线程读本地结果 JSON 预载）；底栏四按钮对整批执行——复制全文=本地结果文件直接拼篇（不走网络）、分享=同一文本、分享链接=AsrLinkBatch 逐条清单、移入资料夹=FolderAddFlow 整批归夹；点条目进单篇详情页（参数口径与 openResult 一致） |
+| 共用模块 | core/AsrTranscripts 新增 joinDocuments（【文件名】抬头的拼篇格式，设置页批量复制与批量结果页共用）；新增 AsrLinkBatch（批量生成分享链接+汇总弹窗，设置页多选「分享链接」改委托，消除两处重复）                                                                                                                              |
+| 关联代码 | AsrShareFlow（runBatch/finishBatch/drainPending/presentResults/openBatch、pendingFailedCount）、AsrBatchResultActivity、AsrLinkBatch、SettingsActivity（batchShareLinks 委托/batchCopyTranscripts 拼篇）、activity_asr_batch_result.xml、asr_batch_item.xml、AndroidManifest、strings 4 条 |
+| 单测    | joinDocuments 2 例（命名段落+空行分隔、空列表）；全量纯函数回归 130 例 OK                                                                                                                                                                                                   |
+| 验证    | v1.15.8/55 已 install -r 装机；冷启动零 FATAL。**端到端多文件转写留用户验证**（需真实分享多个音频走完上传→转写，shell 的 am 造不了多 Uri 列表且冒烟期间用户共机使用）；隔离验证批量页（伪造结果 JSON + am 直启非导出 Activity）被 shell 权限拦下，页面逻辑与已验证的共用模块同源                                                                    |

@@ -93,4 +93,19 @@ class AsrTranscriptsTest {
         )
         assertEquals("结尾段落。", text)
     }
+
+    // ---------- joinDocuments 批量拼篇 ----------
+
+    @Test
+    fun joinDocuments_namedSections_blankLineBetween() {
+        val text = AsrTranscripts.joinDocuments(
+            listOf("通话-张三" to "你好。\n好的。", "通话-李四" to "收到。")
+        )
+        assertEquals("【通话-张三】\n你好。\n好的。\n\n【通话-李四】\n收到。", text)
+    }
+
+    @Test
+    fun joinDocuments_emptyList_returnsEmptyString() {
+        assertEquals("", AsrTranscripts.joinDocuments(emptyList()))
+    }
 }
