@@ -499,4 +499,4 @@
 | 共用模块 | 新增 core/AsrTranscripts（纯函数渲染，详情页复制与批量汇总同一格式）、AsrTranscriptsJson（JSON 适配，options 缺失时按内容推断开关）、FolderAddFlow（归夹对话框流程，设置页两列表+详情页三处共用）；SettingsActivity 删除 6 个私有归夹函数改委托；AsrClient.folderAddItem（单条接口）与 strings.folder_added 移除（统一走批量接口）；详情页标注说话人后 resultJson 同步更新（否则复制全文用旧名字） |
 | 关联代码 | AsrResultActivity（moveToFolder/resultJson/buildPlainFullText）、SettingsActivity（selectedDoneTasks/batchCopyTranscripts/batchShareLinks/showAddToFolderDialog/showBatchAddDialog 委托/renderAsrSelection）、activity_asr_result.xml、activity_settings.xml（asr_selection_bar 两行）、strings 12 条、app/build.gradle.kts |
 | 单测    | AsrTranscriptsTest 6 例（具名+回退编号、无说话人前缀、无时间戳、空名回退+非0起点编号、空段落、去空白）✓；全量纯函数回归 128 例 OK（JUnitCore 直跑，含 zxing/stdlib classpath 补齐）✓ |
-| 验证    | 构建+本地提交 v1.15.7/54；**真机装机与冒烟待补**（交付时华为机未连 adb）：装机后按交付说明「验证路径」逐项点验（详情页四按钮、归夹后根目录消失、批量复制/分享/分享链接） |
+| 验证    | v1.15.7/54 已 `install -r` 装机（dumpsys 确认 versionCode=54）；冷启动/多 Activity 启动零 FATAL（logcat -b crash 空、dropbox 无崩溃记录）、SettingsActivity 前台运行正常（系统日志佐证）。**元素级点验受限于真机**：该 ROM a11y dump 冻结旧树 + screencap 黑帧 + 冒烟期间用户共机使用，详情页四按钮/多选栏四按钮未逐一点验，留给用户按交付清单自查；冒烟期间唯一副作用=取消了一个「添加到主屏幕」弹窗（未装图标） |
