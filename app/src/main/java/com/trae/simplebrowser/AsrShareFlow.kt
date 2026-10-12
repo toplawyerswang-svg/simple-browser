@@ -269,7 +269,8 @@ object AsrShareFlow {
         postProgress(context, label, pct)
     }
 
-    /** 处理单个文件：拷贝到缓存 → 上传建任务 → 轮询至完成。失败抛异常。 */
+    /** 处理单个文件：拷贝到缓存（顺带算内容 MD5）→ 查去重索引（命中且服务端任务仍成功则
+     *  直接复用既有结果，不重复上传转写）→ 未命中才上传建任务 → 轮询至完成并记入索引。失败抛异常。 */
     private fun processOne(context: Context, item: MediaItem, opts: AsrClient.Options,
                            remaining: Int, ordinal: Int): Success {
         val appCtx = context.applicationContext
@@ -278,10 +279,19 @@ object AsrShareFlow {
         val local = File(appCtx.cacheDir,
             "asr_upload_${System.currentTimeMillis()}${resolveExt(displayName, item.mime)}")
         try {
+            val digest = java.security.MessageDigest.getInstance("MD5")
             appCtx.contentResolver.openInputStream(item.uri)?.use { ins ->
-                local.outputStream().use { outs -> ins.copyTo(outs) }
+                java.security.DigestInputStream(ins, digest).use { din ->
+                    local.outputStream().use { outs -> din.copyTo(outs) }
+                }
             } ?: throw IllegalStateException("无法读取分享的录音内容")
             if (local.length() == 0L) throw IllegalStateException("分享的录音内容为空")
+            val md5 = digest.digest().joinToString("") { "%02x".format(it) }
+            val optionsTag = opts.dedupTag()
+
+            val reused = reuseIfTranscribed(appCtx, md5, optionsTag, opts, remaining, ordinal,
+                displayName)
+            if (reused != null) return reused
 
             val taskId = AsrClient.createTask(appCtx, local, opts, displayName) { pct ->
                 report(appCtx, remaining, ordinal,
@@ -302,6 +312,8 @@ object AsrShareFlow {
                         val resultFile = File(appCtx.cacheDir, "asr_result_$taskId.json")
                         resultFile.writeText(task.getJSONObject("result").toString(), Charsets.UTF_8)
                         lastSuccessName = displayName ?: task.optString("filename")
+                        // 记入去重索引：同内容同选项的后续分享直接复用本任务
+                        AsrDupStore.remember(appCtx, md5, optionsTag, taskId)
                         return Success(resultFile, displayName ?: task.optString("filename"),
                             taskId, task.optJSONObject("options"))
                     }
@@ -311,6 +323,28 @@ object AsrShareFlow {
             throw IllegalStateException("处理超时")
         } finally {
             local.delete()
+        }
+    }
+
+    /** 去重命中：本地索引有记录且服务端任务仍为 SUCCEEDED → 落盘结果直接复用；
+     *  索引未命中或任务已删除/失败（如用户在列表里删过）→ 返回 null 照常重转。 */
+    private fun reuseIfTranscribed(context: Context, md5: String, optionsTag: String,
+                                   opts: AsrClient.Options, remaining: Int, ordinal: Int,
+                                   displayName: String?): Success? {
+        val taskId = AsrDupStore.findTaskId(context, md5, optionsTag) ?: return null
+        return try {
+            val task = AsrClient.getTask(context, taskId)
+            if (task.optString("status") != "SUCCEEDED") return null
+            report(context, remaining, ordinal, context.getString(R.string.asr_progress_dup_reuse))
+            val resultFile = File(context.cacheDir, "asr_result_$taskId.json")
+            resultFile.writeText(task.getJSONObject("result").toString(), Charsets.UTF_8)
+            Log.i(TAG, "asr dedup reuse: $taskId")
+            lastSuccessName = displayName ?: task.optString("filename")
+            Success(resultFile, displayName ?: task.optString("filename"),
+                taskId, task.optJSONObject("options") ?: JSONObject(opts.toJson()))
+        } catch (e: Exception) {
+            Log.i(TAG, "asr dedup miss for $taskId: ${e.message}")
+            null
         }
     }
 

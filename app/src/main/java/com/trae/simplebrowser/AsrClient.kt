@@ -21,6 +21,11 @@ object AsrClient {
         val diarize: Boolean,
         val dialect2mandarin: Boolean
     ) {
+        /** 去重索引用的稳定选项标签：同内容同选项才视为重复可复用。 */
+        fun dedupTag(): String =
+            "${if (transcribe) 1 else 0}${if (timestamps) 1 else 0}" +
+                "${if (diarize) 1 else 0}${if (dialect2mandarin) 1 else 0}"
+
         fun toJson(): String = JSONObject().apply {
             put("transcribe", transcribe)
             put("timestamps", timestamps)

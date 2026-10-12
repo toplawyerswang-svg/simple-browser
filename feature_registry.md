@@ -9,7 +9,7 @@
 | 应用名称                      | 轻舟浏览器                                             |
 | applicationId             | `com.trae.lightboat`                              |
 | namespace（Java 包名）        | `com.trae.simplebrowser`                          |
-| versionCode / versionName | 55 / 1.15.8                                       |
+| versionCode / versionName | 56 / 1.15.9                                       |
 | minSdk / targetSdk        | 24 / 34                                           |
 | 旧版共存说明                    | 旧应用"极简浏览器"（`com.trae.simplebrowser`）仍可同机安装，二者互不覆盖 |
 
@@ -512,3 +512,15 @@
 | 关联代码 | AsrShareFlow（runBatch/finishBatch/drainPending/presentResults/openBatch、pendingFailedCount）、AsrBatchResultActivity、AsrLinkBatch、SettingsActivity（batchShareLinks 委托/batchCopyTranscripts 拼篇）、activity_asr_batch_result.xml、asr_batch_item.xml、AndroidManifest、strings 4 条 |
 | 单测    | joinDocuments 2 例（命名段落+空行分隔、空列表）；全量纯函数回归 130 例 OK                                                                                                                                                                                                   |
 | 验证    | v1.15.8/55 已 install -r 装机；冷启动零 FATAL。**端到端多文件转写留用户验证**（需真实分享多个音频走完上传→转写，shell 的 am 造不了多 Uri 列表且冒烟期间用户共机使用）；隔离验证批量页（伪造结果 JSON + am 直启非导出 Activity）被 shell 权限拦下，页面逻辑与已验证的共用模块同源                                                                    |
+
+### F-39 录音转写去重：相同内容+相同选项的分享直接复用既有结果
+
+| 项目    | 内容                                                                                                                                                                                                                          |
+| ----- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 需求    | 反复拿同一组录音测试时，每次分享都重复上传+重复转写（2026-10-12 用户提出）——应当「避免重复摘录」                                                                                                                                                |
+| 去重键 | 文件内容 MD5 + 识别选项标签（transcribe/timestamps/diarize/dialect2mandarin 四位 0/1）：**同内容同选项**才命中；换选项（如补勾方言译普通话）视为新键照常重转。MD5 在拷贝分享内容到缓存时用 DigestInputStream 顺带计算，不额外读一遍文件                                                              |
+| 命中复用 | 本地索引查到 task_id → getTask 核验服务端任务仍 SUCCEEDED → 结果落盘 asr_result_<taskId>.json 直接当成功返回（悬浮条提示「已转写过，直接复用结果」），全程不上传；任务已被删除/失败/索引未命中 → 照常重转，成功后记入索引。getTask 每命中项只多一次轻量查询                                                                                       |
+| 存储   | filesDir/asr_dup_index.tsv（`key	task_id	时间戳` 逐行），读写全程加锁；上限 500 条超出淘汰最早写入，同键重写视为新。纯逻辑在 core/AsrDupIndex（键生成/TSV 解析序列化/淘汰），Android 侧薄封装 AsrDupStore；聊大 zip（微信聊天记录）不在此链路，天然不受影响                                                              |
+| 关联代码 | AsrShareFlow.processOne（MD5+查复用+成功记入）、reuseIfTranscribed、AsrDupStore、AsrClient.Options.dedupTag、core/AsrDupIndex、strings asr_progress_dup_reuse                                                                                                            |
+| 单测    | AsrDupIndexTest 5 例（键生成/选项区分、TSV 往返、脏行容错、同键重写移位、超限淘汰最早）；全量回归 135 例 OK                                                                                                                                                              |
+| 验证    | v1.15.9/56 已 install -r 装机、冷启动零 FATAL。**端到端留用户验证**：升级后首次重复分享同一批仍会各转一次（索引从零建立），此后同内容同选项再分享应秒级复用（悬浮条显示复用提示、任务列表不新增）；在列表删除任务后再分享会重转                                                                                              |
