@@ -2637,12 +2637,65 @@ h1{font-size:19px;color:#111;margin-bottom:6px;word-break:break-all}
 .ocrbtn{display:inline-block;font-size:12px;color:#576b95;margin-top:6px;cursor:pointer}
 .ocr{background:#f7f7f7;border-radius:6px;padding:8px;font-size:12px;line-height:1.5;white-space:pre-wrap;word-break:break-word;max-height:320px;overflow-y:auto;margin-top:4px;color:#333}
 #toast{display:none;position:fixed;left:50%;bottom:60px;transform:translateX(-50%);background:rgba(0,0,0,.75);color:#fff;font-size:13px;padding:8px 16px;border-radius:6px;z-index:9}
+.bubble.fwd{background:transparent;padding:0;max-width:100%}
+.bubble.fwd:before{display:none}
+.fwdcard{background:#f7f6f2;border:1px solid #e6e3dc;border-radius:8px;padding:10px 12px 8px;max-width:430px}
+.fwdhead{font-size:13px;font-weight:600;color:#444}
+.fwdnames{font-size:12px;color:#999;margin-top:3px}
+.fwdrow{margin-top:8px}
+.fwdlabel{font-size:11px;color:#9a9a9a;margin-bottom:2px}
+.fwdtime{margin-left:8px;font-size:11px}
+.fwdbubble{background:#fff;border-radius:4px;padding:7px 10px;font-size:13px;line-height:1.55;color:#111;white-space:pre-wrap;word-break:break-word;display:inline-block;max-width:100%}
+.fwdbubble .pic{max-height:220px}
 """
 
 CHAT_RENDER_JS = r"""
 var PALETTE=["#7cb342","#5c6bc0","#ef5350","#f4b400","#26a69a","#ab47bc","#42a5f5","#ff7043"];
 function esc(s){var d=document.createElement("div");d.textContent=s==null?"":String(s);return d.innerHTML;}
 function hsize(n){if(n>=1048576)return (n/1048576).toFixed(1)+" MB";if(n>=1024)return (n/1024).toFixed(0)+" KB";return n+" B";}
+var TIME_RE=/^(?:\d{4}年\d{1,2}月\d{1,2}日\s+)?\d{1,2}:\d{2}$/;
+function parseRecord(text){
+  var lines=text.replace(/\r\n/g,"\n").split("\n");
+  var subs=[],cur=null;
+  for(var i=1;i<lines.length;i++){
+    var t=lines[i].replace(/^\s+|\s+$/g,"");
+    if(!t){if(cur)cur.b.push("");continue;}
+    if(t.charAt(0)==="·"&&i+1<lines.length&&TIME_RE.test(lines[i+1].replace(/^\s+|\s+$/g,""))){
+      cur={s:t.substring(1).replace(/^\s+|\s+$/g,""),t:lines[i+1].replace(/^\s+|\s+$/g,""),b:[]};
+      subs.push(cur);i++;continue;
+    }
+    if(cur)cur.b.push(t);
+  }
+  return subs;
+}
+function recMedia(line){
+  var mm=line.match(/^\[(图片|视频|文件)\]\s*(\S+)\s*$/);
+  if(!mm)return null;
+  var ai=NMEDIA[mm[2]];if(ai==null)return null;
+  var url='/s/'+SID+'/file/'+ai+'?pwd='+encodeURIComponent(PWD);
+  if(mm[1]==="文件")return '<div class="fcard"><div class="ficon">📄</div><div><div class="fname">'+esc(mm[2])+'</div><a class="fdl" href="'+url+'">下载</a></div></div>';
+  if(mm[1]==="视频")return '<video class="pic" src="'+url+'" controls preload="metadata"></video>';
+  return '<a class="piclink" onclick="showPic(this)" data-full="'+url+'"><img class="pic" src="'+url+'" loading="lazy"></a>';
+}
+function renderRecord(text){
+  var subs=parseRecord(text);
+  var names=[],seen={};
+  for(var i=0;i<subs.length;i++){var dn=RNAMES[subs[i].s]||subs[i].s;if(!seen[dn]){seen[dn]=1;names.push(dn);}}
+  var h='<div class="fwdcard"><div class="fwdhead">💬 转发的聊天记录</div>';
+  if(names.length)h+='<div class="fwdnames">发送人：'+esc(names.join("、"))+'</div>';
+  for(var i=0;i<subs.length;i++){
+    var sb=subs[i],body="";
+    for(var k=0;k<sb.b.length;k++){
+      var med=recMedia(sb.b[k]);
+      if(med)body+=(body?"<br>":"")+med;
+      else if(sb.b[k]==="[聊天记录]")body+=(body?"<br>":"")+'<span class="tagonly">[内含更深层聊天记录，未导出]</span>';
+      else body+=(body?"<br>":"")+esc(sb.b[k]);
+    }
+    if(!body)body="&nbsp;";
+    h+='<div class="fwdrow"><div class="fwdlabel">'+esc(RNAMES[sb.s]||sb.s)+'<span class="fwdtime">'+esc(sb.t)+'</span></div><div class="fwdbubble">'+body+'</div></div>';
+  }
+  return h+'</div>';
+}
 var cmap={},ci=0;
 for(var i=0;i<CHAT.messages.length;i++){var s=CHAT.messages[i].sender;if(!(s in cmap))cmap[s]=ci++;}
 var h="";
@@ -2651,6 +2704,8 @@ for(var i=0;i<CHAT.messages.length;i++){
   var color=PALETTE[cmap[m.sender]%PALETTE.length];
   var dn=RNAMES[m.sender]||m.sender;
   var isSelf=SELF_NICK&&m.sender===SELF_NICK;
+  var isRec=m.type==="text"&&(m.text||"").replace(/^\s+/,"").indexOf("[聊天记录]")===0;
+  var rowSelf=isSelf&&!isRec;
   var av=esc(dn.substring(0,1));
   var inner;
   if(m.type==="file"){
@@ -2664,17 +2719,18 @@ for(var i=0;i<CHAT.messages.length;i++){
     inner=vsrc?'<video class="pic" src="'+vsrc+'" controls preload="metadata"></video>':'<span class="tagonly">[视频]</span>';
   }else if(m.type==="voice"){
     inner='<span class="tagonly">[语音]</span>';
-  }else{inner=esc(m.text);}
+  }else if(isRec){inner=renderRecord(m.text||"");}
+  else{inner=esc(m.text);}
   var ocrExtra="";
   if(m.att!=null&&OCR[m.att]){
     var A=OCR[m.att];
     if(A.ocr){ocrExtra='<div class="ocrwrap"><a class="ocrbtn" onclick="toggleOcr(this)">查看解析结果</a><pre class="ocr" style="display:none">'+esc(A.ocr)+'</pre></div>';}
     else if(A.ocr_status==="pending"){ocrExtra='<div class="ocrwrap"><a class="ocrbtn" style="color:#999;pointer-events:none">解析中，稍后刷新可见</a></div>';}
   }
-  h+='<div class="mrow'+(isSelf?' self':'')+'"><div class="avatar" style="background:'+color+'">'+av+'</div>'
-    +'<div class="mcol'+(isSelf?' self':'')+'"><div class="mlabel"><span class="mname">'+esc(dn)+'</span>'
+  h+='<div class="mrow'+(rowSelf?' self':'')+'"><div class="avatar" style="background:'+color+'">'+av+'</div>'
+    +'<div class="mcol'+(rowSelf?' self':'')+'"><div class="mlabel"><span class="mname">'+esc(dn)+'</span>'
     +'<span class="mtime">'+esc(m.time||"")+'</span></div><div class="bubble'
-    +(isSelf?' self':"")+(((m.type==="image"||m.type==="video")&&m.att!=null)?" media":(m.type!=="text"&&m.type!=="file"?" tagonly":""))+'">'+inner+'</div>'+ocrExtra+'</div></div>';
+    +(rowSelf?' self':"")+(isRec?' fwd':(((m.type==="image"||m.type==="video")&&m.att!=null)?" media":(m.type!=="text"&&m.type!=="file"?" tagonly":"")))+'">'+inner+'</div>'+ocrExtra+'</div></div>';
 }
 document.getElementById("chat").innerHTML=h;
 var _tt=null;
@@ -2708,7 +2764,19 @@ def wxchat_share_page(sh, sid):
     meta = "%d 条消息 · %s · %s ~ %s · 轻舟浏览器转存" % (
         chat["message_count"], parts,
         chat.get("time_start") or "", chat.get("time_end") or "")
-    others = [(i, a) for i, a in enumerate(sh["attachments"]) if a.get("unreferenced")]
+    # 嵌套转发记录正文里点名的媒体（微信对记录内图片写「[图片] 文件名」）按名对号：
+    # 页面把命中项内嵌渲染进记录卡片，不再落入「其他附件」
+    att_by_name = {a["name"]: i for i, a in enumerate(sh["attachments"])}
+    nested_media = {}
+    for m in chat["messages"]:
+        txt = m.get("text") or ""
+        if m.get("type") == "text" and txt.lstrip().startswith("[聊天记录]"):
+            for mo in re.finditer(r"\[(?:图片|视频|文件)\]\s*([^\s\n]+)", txt):
+                if mo.group(1) in att_by_name:
+                    nested_media.setdefault(mo.group(1), att_by_name[mo.group(1)])
+    nested_media_js = json.dumps(nested_media, ensure_ascii=False).replace("</", "<\\/")
+    others = [(i, a) for i, a in enumerate(sh["attachments"])
+              if a.get("unreferenced") and a["name"] not in nested_media]
     others_html = ""
     if others:
         items = "".join(
@@ -2731,13 +2799,13 @@ def wxchat_share_page(sh, sid):
             '</div><div class="chat" id="chat"></div>%s'
             '<div id="toast"></div>'
             '<style>%s</style>'
-            '<script>var CHAT=%s;var OCR=%s;var RNAMES=%s;var SELF_NICK=%s;var SID="%s";var PWD=%s;</script>'
+            '<script>var CHAT=%s;var OCR=%s;var RNAMES=%s;var SELF_NICK=%s;var SID="%s";var PWD=%s;var NMEDIA=%s;</script>'
             '<script>%s</script></body></html>'
             % (html.escape(chat["title"]), html.escape(meta), sid, sh["pwd"],
                others_html, CHAT_PAGE_CSS, chat_js, ocr_js,
                json.dumps(display, ensure_ascii=False).replace("</", "<\\/"),
                json.dumps(self_nick), sid,
-               json.dumps(str(sh["pwd"])), CHAT_RENDER_JS))
+               json.dumps(str(sh["pwd"])), nested_media_js, CHAT_RENDER_JS))
     return ("<!doctype html><html lang=\"zh\"><head><meta charset=\"utf-8\">"
             "<meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">"
             "<title>%s</title></head><body>%s"
