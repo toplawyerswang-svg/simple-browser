@@ -2675,7 +2675,7 @@ function recMedia(line){
   var url='/s/'+SID+'/file/'+ai+'?pwd='+encodeURIComponent(PWD);
   if(mm[1]==="文件")return '<div class="fcard"><div class="ficon">📄</div><div><div class="fname">'+esc(mm[2])+'</div><a class="fdl" href="'+url+'">下载</a></div></div>';
   if(mm[1]==="视频")return '<video class="pic" src="'+url+'" controls preload="metadata"></video>';
-  return '<a class="piclink" onclick="showPic(this)" data-full="'+url+'"><img class="pic" src="'+url+'" loading="lazy"></a>';
+  return '<a class="piclink" onclick="showPic(this)" data-full="'+url+'"><img class="pic" src="'+url+'" loading="lazy"></a><a class="fdl" href="'+url+'">下载</a>';
 }
 function renderRecord(text){
   var subs=parseRecord(text);
@@ -2713,7 +2713,7 @@ for(var i=0;i<CHAT.messages.length;i++){
     inner='<div class="fcard"><div class="ficon">📄</div><div><div class="fname">'+esc(m.text)+'</div><div class="fsize">'+(m.size?hsize(m.size):"文件")+'</div>'+dl+'</div></div>';
   }else if(m.type==="image"){
     var src=m.att!=null?'/s/'+SID+'/file/'+m.att+'?pwd='+encodeURIComponent(PWD):"";
-    inner=src?'<a class="piclink" onclick="showPic(this)" data-full="'+src+'"><img class="pic" src="'+src+'" loading="lazy"></a>':'<span class="tagonly">[图片]</span>';
+    inner=src?'<a class="piclink" onclick="showPic(this)" data-full="'+src+'"><img class="pic" src="'+src+'" loading="lazy"></a><a class="fdl" href="'+src+'">下载</a>':'<span class="tagonly">[图片]</span>';
   }else if(m.type==="video"){
     var vsrc=m.att!=null?'/s/'+SID+'/file/'+m.att+'?pwd='+encodeURIComponent(PWD):"";
     inner=vsrc?'<video class="pic" src="'+vsrc+'" controls preload="metadata"></video>':'<span class="tagonly">[视频]</span>';
