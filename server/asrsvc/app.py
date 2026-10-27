@@ -1680,9 +1680,9 @@ def _natural_key(name):
 GLM_API_URL = "https://open.bigmodel.cn/api/paas/v4/chat/completions"
 GLM_MODEL = CFG.get("glm_vision_model", "glm-4v-flash")
 GLM_KEY = CFG.get("glm_vision_api_key", "")
-OCR_MAX_RETRY = 5
+OCR_MAX_RETRY = 8               # 429/5xx 重试次数（配指数退避）
 OCR_RETRY_DELAY = 1.0
-OCR_CONCURRENCY = 3
+OCR_CONCURRENCY = int(CFG.get("glm_ocr_concurrency", 10))  # GLM 摘录并发，账户额度可调
 OCR_MAX_PDF_PAGES = 30
 OCR_RENDER_BATCH = 20         # pdftoppm 单批渲染页数（每批独立 300 秒超时，整本不限页）
 OCR_MAX_FILE_MB = 30
@@ -1740,7 +1740,7 @@ def _glm_extract_image(b64, mime):
             if r.status_code == 429 or r.status_code >= 500:
                 last = "HTTP %s" % r.status_code
                 if attempt < OCR_MAX_RETRY:
-                    time.sleep(OCR_RETRY_DELAY)
+                    time.sleep(min(30, 2 ** (attempt - 1)))
                     continue
                 return None, last
             if r.status_code >= 400:
@@ -1766,6 +1766,53 @@ def _ocr_one_image(path):
     except Exception as e:
         return None, "预处理失败: %s" % e
     return _glm_extract_image(b64, mime)
+
+
+def _vision_extract(path, deadline_s):
+    """走 SER8 glm-vision 统一视觉入口：异步提交 + 长轮询，返回 (text, err)。"""
+    base = (CFG.get("vision_base_url") or "").rstrip("/")
+    key = CFG.get("vision_api_key") or ""
+    if not base or not key:
+        return None, "未配置 vision_base_url/vision_api_key"
+    hd = {"Authorization": "Bearer " + key, "Content-Type": "application/json"}
+    try:
+        with open(path, "rb") as f:
+            data = base64.b64encode(f.read()).decode()
+        r = requests.post(base + "/v1/tasks", timeout=120, headers=hd,
+                          json={"items": [{"name": os.path.basename(path), "data_b64": data}]})
+        if r.status_code >= 400:
+            return None, "vision 提交失败 HTTP %s: %s" % (r.status_code, r.text[:200])
+        tid = (r.json().get("tasks") or [{}])[0].get("task_id")
+        if not tid:
+            return None, "vision 响应缺 task_id"
+        t0 = time.time()
+        while time.time() - t0 < deadline_s:
+            q = requests.get(base + "/v1/tasks/" + tid, timeout=180, headers=hd,
+                             params={"wait": 1, "timeout": 120})
+            if q.status_code >= 400:
+                return None, "vision 查询失败 HTTP %s: %s" % (q.status_code, q.text[:200])
+            tj = q.json()
+            st = tj.get("status")
+            if st == "done":
+                res = tj.get("result") or {}
+                pgs = res.get("pages") or []
+                ok = sum(1 for p in pgs if p.get("ok"))
+                head = "共 %d 页，成功 %d 页\n\n" % (tj.get("pages_total") or len(pgs), ok)
+                return head + (res.get("text") or ""), None
+            if st == "error":
+                return None, "vision 任务失败: %s" % (tj.get("error") or "未知")
+        return None, "vision 任务超时(%ds)，task_id=%s" % (deadline_s, tid)
+    except requests.RequestException as e:
+        return None, "vision 网络异常: %s" % str(e)[:200]
+
+
+def _ocr_extract(path, ext):
+    """优先 SER8 glm-vision 统一入口（多通道高并发+内容校验）；未配置时退回直连 GLM。"""
+    if CFG.get("vision_base_url") and CFG.get("vision_api_key"):
+        return _vision_extract(path, 3600 if ext == ".pdf" else 600)
+    if ext == ".pdf":
+        return _ocr_pdf_to_markdown(path)
+    return _ocr_one_image(str(path))
 
 
 def _ocr_pdf_to_markdown(pdf_path):
@@ -1971,10 +2018,7 @@ def wxchat_kick_ocr(sid):
                 att["ocr_status"] = "pending"
                 save_share(sh)
                 try:
-                    if ext == ".pdf":
-                        text, err = _ocr_pdf_to_markdown(path)
-                    else:
-                        text, err = _ocr_one_image(str(path))
+                    text, err = _ocr_extract(path, ext)
                 except Exception as e:
                     text, err = None, "解析异常: %s" % e
                 if text:
