@@ -1684,6 +1684,7 @@ OCR_MAX_RETRY = 5
 OCR_RETRY_DELAY = 1.0
 OCR_CONCURRENCY = 3
 OCR_MAX_PDF_PAGES = 30
+OCR_RENDER_BATCH = 20         # pdftoppm 单批渲染页数（每批独立 300 秒超时，整本不限页）
 OCR_MAX_FILE_MB = 30
 
 OCR_PROMPT = """请完整摘录这张图片中的所有文字内容，逐字不要修改、不得概括、不得省略。
@@ -1772,7 +1773,7 @@ def _ocr_pdf_to_markdown(pdf_path):
     import tempfile
     work = tempfile.mkdtemp(prefix="wxocr_")
     try:
-        # 先 pdfinfo 取总页数；渲染用 -l 封顶，防止几百页的年报把 300 秒拆页超时拖爆
+        # pdfinfo 取总页数；pdftoppm 分批(-f/-l)渲染整本，单批 300 秒，页数不设上限
         total_pages = None
         try:
             info = subprocess.run(["pdfinfo", str(pdf_path)], capture_output=True, timeout=60)
@@ -1783,23 +1784,39 @@ def _ocr_pdf_to_markdown(pdf_path):
                     total_pages = int(m.group(1))
         except Exception:
             pass
-        p = subprocess.run(["pdftoppm", "-r", "150", "-png", "-l", str(OCR_MAX_PDF_PAGES),
-                            str(pdf_path), os.path.join(work, "pg")],
-                           capture_output=True, timeout=300)
-        if p.returncode != 0:
-            return None, "pdftoppm 失败: %s" % p.stderr.decode("utf-8", "replace")[:200]
-        pages = sorted(glob.glob(os.path.join(work, "pg-*.png")))
-        if not pages:
-            return None, "PDF 未拆出任何页面"
-        truncated = total_pages is not None and total_pages > len(pages)
+        if not total_pages:
+            return None, "pdfinfo 未取得 PDF 页数"
+        pages = []  # (页号, 文件路径)
+        first = 1
+        while first <= total_pages:
+            last = min(first + OCR_RENDER_BATCH - 1, total_pages)
+            bdir = os.path.join(work, "b%04d" % first)
+            os.mkdir(bdir)
+            p = subprocess.run(["pdftoppm", "-r", "150", "-png",
+                                "-f", str(first), "-l", str(last),
+                                str(pdf_path), os.path.join(bdir, "pg")],
+                               capture_output=True, timeout=300)
+            if p.returncode != 0:
+                return None, "pdftoppm 失败(第 %d-%d 页): %s" % (
+                    first, last, p.stderr.decode("utf-8", "replace")[:200])
+            batch = sorted(glob.glob(os.path.join(bdir, "pg-*.png")))
+            if len(batch) != last - first + 1:
+                return None, "pdftoppm 渲染页数不全(第 %d-%d 页): 仅得 %d 页" % (
+                    first, last, len(batch))
+            pages.extend((first + i, f) for i, f in enumerate(batch))
+            first = last + 1
+        pagemap = dict(pages)
         with ThreadPoolExecutor(max_workers=OCR_CONCURRENCY) as ex:
-            futs = {pg: ex.submit(_ocr_one_image, pg) for pg in pages}
-            results = {pg: fut.result() for pg, fut in futs.items()}
+            futs = {no: ex.submit(_ocr_one_image, pg) for no, pg in pages}
+            results = {no: fut.result() for no, fut in futs.items()}
+        for no in [no for no in sorted(results) if results[no][1]]:  # 失败页补摘一轮
+            time.sleep(OCR_RETRY_DELAY)
+            results[no] = _ocr_one_image(pagemap[no])
         parts = []
         ok = 0
-        for i, pg in enumerate(pages, start=1):
-            text, err = results[pg]
-            parts.append("## 第 %d 页" % i)
+        for no in sorted(results):
+            text, err = results[no]
+            parts.append("## 第 %d 页" % no)
             parts.append("")
             if err:
                 parts.append("> ⚠️ 本页摘录失败：%s" % err)
@@ -1807,9 +1824,7 @@ def _ocr_pdf_to_markdown(pdf_path):
                 ok += 1
                 parts.append(text)
             parts.append("")
-        head = "共 %d 页，成功 %d 页%s\n\n" % (
-            total_pages if total_pages is not None else len(pages), ok,
-            "（仅解析前 %d 页）" % len(pages) if truncated else "")
+        head = "共 %d 页，成功 %d 页\n\n" % (total_pages, ok)
         return head + "\n".join(parts).strip(), None
     finally:
         shutil.rmtree(work, ignore_errors=True)
@@ -1950,7 +1965,7 @@ def wxchat_kick_ocr(sid):
                 path = (fdir / att["path"]).resolve()
                 if not str(path).startswith(str(fdir_resolved)) or not path.exists():
                     continue
-                if att.get("size", 0) > OCR_MAX_FILE_MB * 1024 * 1024:
+                if ext != ".pdf" and att.get("size", 0) > OCR_MAX_FILE_MB * 1024 * 1024:
                     att["ocr_status"] = "skipped"
                     continue
                 att["ocr_status"] = "pending"
