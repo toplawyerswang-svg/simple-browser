@@ -1772,16 +1772,26 @@ def _ocr_pdf_to_markdown(pdf_path):
     import tempfile
     work = tempfile.mkdtemp(prefix="wxocr_")
     try:
-        p = subprocess.run(["pdftoppm", "-r", "150", "-png", str(pdf_path),
-                            os.path.join(work, "pg")], capture_output=True, timeout=300)
+        # 先 pdfinfo 取总页数；渲染用 -l 封顶，防止几百页的年报把 300 秒拆页超时拖爆
+        total_pages = None
+        try:
+            info = subprocess.run(["pdfinfo", str(pdf_path)], capture_output=True, timeout=60)
+            if info.returncode == 0:
+                m = re.search(r"^Pages:\s+(\d+)",
+                              info.stdout.decode("utf-8", "replace"), re.M)
+                if m:
+                    total_pages = int(m.group(1))
+        except Exception:
+            pass
+        p = subprocess.run(["pdftoppm", "-r", "150", "-png", "-l", str(OCR_MAX_PDF_PAGES),
+                            str(pdf_path), os.path.join(work, "pg")],
+                           capture_output=True, timeout=300)
         if p.returncode != 0:
             return None, "pdftoppm 失败: %s" % p.stderr.decode("utf-8", "replace")[:200]
         pages = sorted(glob.glob(os.path.join(work, "pg-*.png")))
         if not pages:
             return None, "PDF 未拆出任何页面"
-        truncated = len(pages) > OCR_MAX_PDF_PAGES
-        if truncated:
-            pages = pages[:OCR_MAX_PDF_PAGES]
+        truncated = total_pages is not None and total_pages > len(pages)
         with ThreadPoolExecutor(max_workers=OCR_CONCURRENCY) as ex:
             futs = {pg: ex.submit(_ocr_one_image, pg) for pg in pages}
             results = {pg: fut.result() for pg, fut in futs.items()}
@@ -1798,7 +1808,8 @@ def _ocr_pdf_to_markdown(pdf_path):
                 parts.append(text)
             parts.append("")
         head = "共 %d 页，成功 %d 页%s\n\n" % (
-            len(pages), ok, "（仅解析前 %d 页）" % OCR_MAX_PDF_PAGES if truncated else "")
+            total_pages if total_pages is not None else len(pages), ok,
+            "（仅解析前 %d 页）" % len(pages) if truncated else "")
         return head + "\n".join(parts).strip(), None
     finally:
         shutil.rmtree(work, ignore_errors=True)
@@ -1944,10 +1955,13 @@ def wxchat_kick_ocr(sid):
                     continue
                 att["ocr_status"] = "pending"
                 save_share(sh)
-                if ext == ".pdf":
-                    text, err = _ocr_pdf_to_markdown(path)
-                else:
-                    text, err = _ocr_one_image(str(path))
+                try:
+                    if ext == ".pdf":
+                        text, err = _ocr_pdf_to_markdown(path)
+                    else:
+                        text, err = _ocr_one_image(str(path))
+                except Exception as e:
+                    text, err = None, "解析异常: %s" % e
                 if text:
                     att["ocr"] = text
                     att["ocr_status"] = "done"
