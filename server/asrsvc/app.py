@@ -1773,16 +1773,17 @@ def _ocr_one_image(path):
 def _vision_extract_batch(jobs, save):
     """批量走 SER8 glm-vision 统一入口：一次 /v1/tasks 提交全部文件，统一长轮询收结果。
 
-    服务端调度器自带数千路并发（auto 共 3150 路），逐文件提交+串行等待会把多文件
-    解析拖成串行；这里把一次解析的全部附件合并提交（同一 batch_id），再轮转长轮询，
-    谁先完成谁先落账。jobs = [(att, path, ext)]；结果直接写 att 并经 save() 落盘。
-    config.vision_model 可点名模型（如 glm-4v-flash 保免费池）；留空 = auto，吞吐最高
-    （注意：auto 优先落阿里云 batch 计费通道，GLM 免费池为溢出/兜底——见服务端 notices）。
+    服务端调度器自带数千路并发，逐文件提交+串行等待会把多文件解析拖成串行；这里把
+    一次解析的全部附件合并提交（同一 batch_id），再轮转长轮询，谁先完成谁先落账。
+    jobs = [(att, path, ext)]；结果直接写 att 并经 save() 落盘。
+    默认钉 glm-4v-flash（免费池主力，110 路并发）；config.vision_model 可覆盖——
+    "auto" 走全通道自动路由（吞吐最高，但多为阿里云 batch 计费通道）；难图可点名
+    glm-4.1v-thinking-flash（35 路）。钉死 GLM 无 1301 内容安全兜底（拒绝页按失败收尾）。
     """
     base = (CFG.get("vision_base_url") or "").rstrip("/")
     hd = {"Authorization": "Bearer " + (CFG.get("vision_api_key") or ""),
           "Content-Type": "application/json"}
-    model = str(CFG.get("vision_model") or "").strip()
+    model = str(CFG.get("vision_model") or "glm-4v-flash").strip()
     t0 = time.time()
 
     def finish(att, text=None, err=None):
