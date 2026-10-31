@@ -1686,6 +1686,8 @@ OCR_CONCURRENCY = int(CFG.get("glm_ocr_concurrency", 10))  # GLM 摘录并发，
 OCR_MAX_PDF_PAGES = 30
 OCR_RENDER_BATCH = 20         # pdftoppm 单批渲染页数（每批独立 300 秒超时，整本不限页）
 OCR_MAX_FILE_MB = 30
+VISION_FILE_MB = 100          # glm-vision 服务端单文件上限（超限预检剔除，避免 400 连坐整批）
+VISION_SUBMIT_MB = 200        # 单次 /v1/tasks 请求的文件总量上限（服务端请求体上限 512MB，留余量）
 
 OCR_PROMPT = """请完整摘录这张图片中的所有文字内容，逐字不要修改、不得概括、不得省略。
 
@@ -1768,29 +1770,92 @@ def _ocr_one_image(path):
     return _glm_extract_image(b64, mime)
 
 
-def _vision_extract(path, deadline_s):
-    """走 SER8 glm-vision 统一视觉入口：异步提交 + 长轮询，返回 (text, err)。"""
+def _vision_extract_batch(jobs, save):
+    """批量走 SER8 glm-vision 统一入口：一次 /v1/tasks 提交全部文件，统一长轮询收结果。
+
+    服务端调度器自带数千路并发（auto 共 3150 路），逐文件提交+串行等待会把多文件
+    解析拖成串行；这里把一次解析的全部附件合并提交（同一 batch_id），再轮转长轮询，
+    谁先完成谁先落账。jobs = [(att, path, ext)]；结果直接写 att 并经 save() 落盘。
+    config.vision_model 可点名模型（如 glm-4v-flash 保免费池）；留空 = auto，吞吐最高
+    （注意：auto 优先落阿里云 batch 计费通道，GLM 免费池为溢出/兜底——见服务端 notices）。
+    """
     base = (CFG.get("vision_base_url") or "").rstrip("/")
-    key = CFG.get("vision_api_key") or ""
-    if not base or not key:
-        return None, "未配置 vision_base_url/vision_api_key"
-    hd = {"Authorization": "Bearer " + key, "Content-Type": "application/json"}
-    try:
-        with open(path, "rb") as f:
-            data = base64.b64encode(f.read()).decode()
-        r = requests.post(base + "/v1/tasks", timeout=120, headers=hd,
-                          json={"items": [{"name": os.path.basename(path), "data_b64": data}]})
-        if r.status_code >= 400:
-            return None, "vision 提交失败 HTTP %s: %s" % (r.status_code, r.text[:200])
-        tid = (r.json().get("tasks") or [{}])[0].get("task_id")
-        if not tid:
-            return None, "vision 响应缺 task_id"
-        t0 = time.time()
-        while time.time() - t0 < deadline_s:
-            q = requests.get(base + "/v1/tasks/" + tid, timeout=180, headers=hd,
-                             params={"wait": 1, "timeout": 120})
+    hd = {"Authorization": "Bearer " + (CFG.get("vision_api_key") or ""),
+          "Content-Type": "application/json"}
+    model = str(CFG.get("vision_model") or "").strip()
+    t0 = time.time()
+
+    def finish(att, text=None, err=None):
+        if text is not None:
+            att["ocr"] = text
+            att["ocr_status"] = "done"
+        else:
+            att["ocr_status"] = "failed"
+            att["ocr_error"] = err
+        save()
+
+    def submit(chunk):
+        """提交一批 items；返回 [(att, task_id, deadline)]，提交失败则整块按失败收尾。"""
+        items = []
+        for att, path, _ext in chunk:
+            with open(path, "rb") as f:
+                it = {"name": os.path.basename(path),
+                      "data_b64": base64.b64encode(f.read()).decode(),
+                      "key": att.get("name") or os.path.basename(path)}
+            if model:
+                it["model"] = model
+            items.append(it)
+        try:
+            r = requests.post(base + "/v1/tasks", timeout=300, headers=hd, json={"items": items})
+            if r.status_code >= 400:
+                for att, _p, _e in chunk:
+                    finish(att, err="vision 提交失败 HTTP %s: %s" % (r.status_code, r.text[:200]))
+                return []
+            tids = [t.get("task_id") for t in (r.json().get("tasks") or [])]
+            if len(tids) != len(chunk) or not all(tids):
+                for att, _p, _e in chunk:
+                    finish(att, err="vision 响应 task 数不符: %s" % (r.text[:200]))
+                return []
+            return [(att, tid, t0 + (3600 if ext == ".pdf" else 600))
+                    for (att, _p, ext), tid in zip(chunk, tids)]
+        except requests.RequestException as e:
+            for att, _p, _e in chunk:
+                finish(att, err="vision 网络异常: %s" % str(e)[:200])
+            return []
+
+    running = []                      # (att, task_id, deadline)
+    chunk, chunk_bytes = [], 0        # 请求体超限分块：按 base64 体积（约 4/3 原始字节）累计
+    for att, path, ext in jobs:
+        size = os.path.getsize(path)
+        if size > VISION_FILE_MB * 1024 * 1024:
+            finish(att, err="超过 glm-vision 单文件上限 %dMB" % VISION_FILE_MB)
+            continue
+        if chunk and chunk_bytes + size * 4 // 3 > VISION_SUBMIT_MB * 1024 * 1024:
+            running.extend(submit(chunk))
+            chunk, chunk_bytes = [], 0
+        chunk.append((att, path, ext))
+        chunk_bytes += size * 4 // 3
+    if chunk:
+        running.extend(submit(chunk))
+
+    while running:                    # 轮转长轮询：所有任务在服务端并行跑，先完成先落账
+        left = []
+        for att, tid, dl in running:
+            if time.time() > dl:
+                finish(att, err="vision 任务超时，task_id=%s（服务端仍在跑，重新解析可续）" % tid)
+                continue
+            try:
+                q = requests.get(base + "/v1/tasks/" + tid, timeout=180, headers=hd,
+                                 params={"wait": 1, "timeout": 120})
+            except requests.RequestException:
+                left.append((att, tid, dl))   # 网络抖动：保留下一轮再查
+                continue
+            if q.status_code == 404:
+                finish(att, err="vision 任务不存在: %s" % tid)
+                continue
             if q.status_code >= 400:
-                return None, "vision 查询失败 HTTP %s: %s" % (q.status_code, q.text[:200])
+                finish(att, err="vision 查询失败 HTTP %s: %s" % (q.status_code, q.text[:200]))
+                continue
             tj = q.json()
             st = tj.get("status")
             if st == "done":
@@ -1798,18 +1863,17 @@ def _vision_extract(path, deadline_s):
                 pgs = res.get("pages") or []
                 ok = sum(1 for p in pgs if p.get("ok"))
                 head = "共 %d 页，成功 %d 页\n\n" % (tj.get("pages_total") or len(pgs), ok)
-                return head + (res.get("text") or ""), None
+                finish(att, text=head + (res.get("text") or ""))
+                continue
             if st == "error":
-                return None, "vision 任务失败: %s" % (tj.get("error") or "未知")
-        return None, "vision 任务超时(%ds)，task_id=%s" % (deadline_s, tid)
-    except requests.RequestException as e:
-        return None, "vision 网络异常: %s" % str(e)[:200]
+                finish(att, err="vision 任务失败: %s" % (tj.get("error") or "未知"))
+                continue
+            left.append((att, tid, dl))
+        running = left
 
 
 def _ocr_extract(path, ext):
-    """优先 SER8 glm-vision 统一入口（多通道高并发+内容校验）；未配置时退回直连 GLM。"""
-    if CFG.get("vision_base_url") and CFG.get("vision_api_key"):
-        return _vision_extract(path, 3600 if ext == ".pdf" else 600)
+    """直连 GLM 兜底（未配置 SER8 glm-vision 时用）：PDF 拆页并发摘录，图片单张。"""
     if ext == ".pdf":
         return _ocr_pdf_to_markdown(path)
     return _ocr_one_image(str(path))
@@ -1988,7 +2052,11 @@ _ocr_running = set()
 
 
 def wxchat_kick_ocr(sid):
-    """异步解析该分享的图片/PDF 附件；幂等（进行中不重复起线程，已完成的跳过）。"""
+    """异步解析该分享的图片/PDF 附件；幂等（进行中不重复起线程，已完成的跳过）。
+
+    配置了 SER8 glm-vision 时，全部待解析附件合并一批提交（吃满服务端并发）；
+    未配置时退回直连 GLM 逐个解析。
+    """
     with _ocr_lock:
         if sid in _ocr_running:
             return
@@ -2001,6 +2069,7 @@ def wxchat_kick_ocr(sid):
                 return
             fdir = DATA / (sid + ".wxfiles")
             fdir_resolved = fdir.resolve()
+            jobs = []  # (att, path, ext)
             for att in sh["attachments"]:
                 if att.get("ocr_status") == "done":
                     continue
@@ -2016,18 +2085,31 @@ def wxchat_kick_ocr(sid):
                     att["ocr_status"] = "skipped"
                     continue
                 att["ocr_status"] = "pending"
+                jobs.append((att, path, ext))
+            if jobs:
                 save_share(sh)
-                try:
-                    text, err = _ocr_extract(path, ext)
-                except Exception as e:
-                    text, err = None, "解析异常: %s" % e
-                if text:
-                    att["ocr"] = text
-                    att["ocr_status"] = "done"
+                if CFG.get("vision_base_url") and CFG.get("vision_api_key"):
+                    try:
+                        _vision_extract_batch(jobs, save=lambda: save_share(sh))
+                    except Exception as e:
+                        for att, _p, _e in jobs:  # 引擎级异常：未收尾的附件统一按失败收尾
+                            if att.get("ocr_status") == "pending":
+                                att["ocr_status"] = "failed"
+                                att["ocr_error"] = "批量解析异常: %s" % e
+                        save_share(sh)
                 else:
-                    att["ocr_status"] = "failed"
-                    att["ocr_error"] = err
-                save_share(sh)
+                    for att, path, ext in jobs:
+                        try:
+                            text, err = _ocr_extract(path, ext)
+                        except Exception as e:
+                            text, err = None, "解析异常: %s" % e
+                        if text:
+                            att["ocr"] = text
+                            att["ocr_status"] = "done"
+                        else:
+                            att["ocr_status"] = "failed"
+                            att["ocr_error"] = err
+                        save_share(sh)
             print("wxchat ocr done:", sid, flush=True)
         except Exception as e:
             print("wxchat ocr error:", sid, e, flush=True)
