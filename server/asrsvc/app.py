@@ -2882,6 +2882,7 @@ h1{font-size:19px;color:#111;margin-bottom:6px;word-break:break-all}
 #fmask{position:fixed;left:0;top:0;width:100%;height:100%;background:rgba(0,0,0,.45);z-index:98;display:flex;align-items:center;justify-content:center}
 #fdlg{background:#fff;border-radius:10px;width:86%;max-width:340px;max-height:72vh;display:flex;flex-direction:column;overflow:hidden}
 #fdlg h3{font-size:15px;color:#111;padding:14px 16px 8px}
+#fsearch{display:block;margin:0 16px 6px;border:1px solid #d9d9d9;border-radius:6px;padding:7px 9px;font-size:13px;outline:none;width:calc(100% - 32px);box-sizing:border-box}
 #flist{overflow-y:auto;padding:2px 8px}
 .frow{padding:11px 10px;border-radius:8px;font-size:14px;color:#111;cursor:pointer;display:flex;justify-content:space-between;align-items:center;gap:8px}
 .frow:active{background:#f2f2f2}
@@ -3008,12 +3009,25 @@ function showFolderPicker(folders,tk){
     var f=folders[i];
     rows+='<div class="frow" data-id="'+esc(f.folder_id)+'" data-name="'+esc(f.name)+'"><span class="fname">'+esc(f.name)+'</span><span class="cnt">'+(f.alive_count!=null?f.alive_count:0)+'条</span></div>';
   }
-  mask.innerHTML='<div id="fdlg"><h3>移入资料夹</h3><div id="flist">'+(rows||'<div class="fempty">还没有资料夹，在下方新建一个</div>')
-    +'</div><div id="fnew"><input id="fnewname" placeholder="新建资料夹名称"><button id="fnewbtn">新建并移入</button></div>'
+  mask.innerHTML='<div id="fdlg"><h3>移入资料夹</h3>'+(folders.length?'<input id="fsearch" placeholder="搜索资料夹">':'')
+    +'<div id="flist">'+(rows||'<div class="fempty">还没有资料夹，在下方新建一个</div>')
+    +'<div id="fnoresult" class="fempty" style="display:none">没有匹配的资料夹，可用下方新建</div></div>'
+    +'<div id="fnew"><input id="fnewname" placeholder="新建资料夹名称"><button id="fnewbtn">新建并移入</button></div>'
     +'<div class="dlgfoot"><button id="fclosebtn">取消</button></div></div>';
   document.body.appendChild(mask);
   mask.addEventListener("click",function(e){if(e.target===mask)closeFolderPicker();});
   document.getElementById("fclosebtn").onclick=closeFolderPicker;
+  var sinput=document.getElementById("fsearch");
+  if(sinput)sinput.addEventListener("input",function(){
+    var q=(sinput.value||"").toLowerCase();
+    var rows=document.querySelectorAll("#flist .frow");var vis=0;
+    for(var i=0;i<rows.length;i++){
+      var hit=!q||(rows[i].getAttribute("data-name")||"").toLowerCase().indexOf(q)>=0;
+      rows[i].style.display=hit?"":"none";if(hit)vis++;
+    }
+    var em=document.getElementById("fnoresult");
+    if(em)em.style.display=vis?"none":"block";
+  });
   document.getElementById("flist").addEventListener("click",function(e){
     var row=e.target&&e.target.closest?e.target.closest(".frow"):null;
     if(row)moveTo(row.getAttribute("data-id"),row.getAttribute("data-name"),tk);
