@@ -2879,6 +2879,21 @@ h1{font-size:19px;color:#111;margin-bottom:6px;word-break:break-all}
 .fwdtime{margin-left:8px;font-size:11px}
 .fwdbubble{background:#fff;border-radius:4px;padding:7px 10px;font-size:13px;line-height:1.55;color:#111;white-space:pre-wrap;word-break:break-word;display:inline-block;max-width:100%}
 .fwdbubble .pic{max-height:220px}
+#fmask{position:fixed;left:0;top:0;width:100%;height:100%;background:rgba(0,0,0,.45);z-index:98;display:flex;align-items:center;justify-content:center}
+#fdlg{background:#fff;border-radius:10px;width:86%;max-width:340px;max-height:72vh;display:flex;flex-direction:column;overflow:hidden}
+#fdlg h3{font-size:15px;color:#111;padding:14px 16px 8px}
+#flist{overflow-y:auto;padding:2px 8px}
+.frow{padding:11px 10px;border-radius:8px;font-size:14px;color:#111;cursor:pointer;display:flex;justify-content:space-between;align-items:center;gap:8px}
+.frow:active{background:#f2f2f2}
+.frow .fname{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.frow .cnt{flex:none;font-size:12px;color:#999}
+.fempty{padding:14px;color:#999;font-size:13px}
+#fnew{display:flex;gap:8px;padding:10px 16px 4px}
+#fnew input{flex:1;min-width:0;border:1px solid #d9d9d9;border-radius:6px;padding:7px 9px;font-size:13px;outline:none}
+#fnew button{font-size:13px;padding:7px 12px;border-radius:6px;border:1px solid #d0d0d0;background:#fff;color:#333;cursor:pointer;white-space:nowrap}
+#fnew button:disabled{opacity:.5}
+.dlgfoot{padding:8px 16px 14px;text-align:right}
+.dlgfoot button{font-size:13px;color:#888;background:none;border:none;cursor:pointer;padding:6px 10px}
 """
 
 CHAT_RENDER_JS = r"""
@@ -2974,6 +2989,56 @@ function toggleOcr(el){var p=el.nextElementSibling;var show=p.style.display==="n
 var viewer=document.createElement("div");viewer.id="viewer";viewer.innerHTML='<img id="viewimg" alt="">';viewer.onclick=function(){viewer.style.display="none";};document.body.appendChild(viewer);
 function showPic(a){document.getElementById("viewimg").src=a.getAttribute("data-full");viewer.style.display="flex";history.pushState({v:1},"");}
 window.onpopstate=function(){if(viewer.style.display==="flex")viewer.style.display="none";};
+// ---- 移入资料夹：按钮默认隐藏，轻舟浏览器注入令牌（window.__lzAsrToken）后揭示；
+// 外部浏览器/AI 打开同一链接没有注入，按钮不出现也动不了资料夹 ----
+function lzToken(){try{return (window.__lzAsrToken&&window.__lzAsrToken())||"";}catch(e){return "";}}
+function moveToFolder(){
+  var tk=lzToken();
+  if(!tk){toast("请在轻舟浏览器中打开后使用");return;}
+  fetch("/api/asr/folders",{headers:{"X-LZ-Token":tk}}).then(function(r){return r.json();}).then(function(j){
+    if(j.error){toast(j.error==="unauthorized"?"令牌已失效，请到设置页重新核验":j.error);return;}
+    showFolderPicker(j.folders||[],tk);
+  }).catch(function(){toast("获取资料夹失败");});
+}
+function showFolderPicker(folders,tk){
+  closeFolderPicker();
+  var mask=document.createElement("div");mask.id="fmask";
+  var rows="";
+  for(var i=0;i<folders.length;i++){
+    var f=folders[i];
+    rows+='<div class="frow" data-id="'+esc(f.folder_id)+'" data-name="'+esc(f.name)+'"><span class="fname">'+esc(f.name)+'</span><span class="cnt">'+(f.alive_count!=null?f.alive_count:0)+'条</span></div>';
+  }
+  mask.innerHTML='<div id="fdlg"><h3>移入资料夹</h3><div id="flist">'+(rows||'<div class="fempty">还没有资料夹，在下方新建一个</div>')
+    +'</div><div id="fnew"><input id="fnewname" placeholder="新建资料夹名称"><button id="fnewbtn">新建并移入</button></div>'
+    +'<div class="dlgfoot"><button id="fclosebtn">取消</button></div></div>';
+  document.body.appendChild(mask);
+  mask.addEventListener("click",function(e){if(e.target===mask)closeFolderPicker();});
+  document.getElementById("fclosebtn").onclick=closeFolderPicker;
+  document.getElementById("flist").addEventListener("click",function(e){
+    var row=e.target&&e.target.closest?e.target.closest(".frow"):null;
+    if(row)moveTo(row.getAttribute("data-id"),row.getAttribute("data-name"),tk);
+  });
+  var btn=document.getElementById("fnewbtn");
+  btn.onclick=function(){
+    var name=(document.getElementById("fnewname").value||"").replace(/^\s+|\s+$/g,"");
+    if(!name){toast("请填写文件夹名称");return;}
+    btn.disabled=true;
+    fetch("/api/asr/folders",{method:"POST",headers:{"X-LZ-Token":tk,"Content-Type":"application/json"},body:JSON.stringify({name:name})})
+      .then(function(r){return r.json();}).then(function(j){
+        if(j.error){btn.disabled=false;toast(j.error);return;}
+        moveTo(j.folder_id,name,tk);
+      }).catch(function(){btn.disabled=false;toast("新建失败");});
+  };
+}
+function moveTo(fid,fname,tk){
+  fetch("/api/asr/folders/"+encodeURIComponent(fid)+"/items",{method:"POST",headers:{"X-LZ-Token":tk,"Content-Type":"application/json"},body:JSON.stringify({kind:"wxchat",ref:SID})})
+    .then(function(r){return r.json();}).then(function(j){
+      closeFolderPicker();
+      if(j.error){toast(j.error);return;}
+      toast(j.added===false?(j.message||"已在该资料夹中"):"已移入「"+fname+"」");
+    }).catch(function(){toast("移入失败");});
+}
+function closeFolderPicker(){var m=document.getElementById("fmask");if(m&&m.parentNode)m.parentNode.removeChild(m);}
 """
 
 
@@ -3028,6 +3093,7 @@ def wxchat_share_page(sh, sid):
             '<div class="bar">'
             '<button onclick="copyAll()">复制全文</button>'
             '<a href="/s/%s/chat.json?pwd=%s">Agent 数据（JSON）</a>'
+            '<button id="lzMoveBtn" onclick="moveToFolder()" style="display:none">移入资料夹</button>'
             '</div><div class="chat" id="chat"></div>%s'
             '<div id="toast"></div>'
             '<style>%s</style>'

@@ -994,6 +994,7 @@ class MainActivity : AppCompatActivity() {
                 }
                 runMixedContentFixThrottled(view)
                 injectAdAutoHideJs(view, url)
+                injectAsrOwnerJs(view, url)
                 // 浏览历史：仅记录 http(s) 主文档（file://、intent: 等不记）
                 if (url.startsWith("http")) {
                     AppPrefs.addHistory(this@MainActivity, currentTitle, url)
@@ -1511,6 +1512,23 @@ class MainActivity : AppCompatActivity() {
         WebResourceResponse("text/plain", "utf-8", ByteArrayInputStream(ByteArray(0)))
 
     /** 保守自动隐藏：广告关/白名单站点不注入 */
+    /**
+     * asrsvc 分享页 owner 注入：把令牌交给页面（window.__lzAsrToken）并揭示「移入资料夹」按钮
+     * （页面按钮默认 display:none）。仅对 asrsvc 域注入——令牌不能暴露给任意网页；
+     * 外部浏览器/AI 打开同一链接没有注入，看不到该按钮也无法调用资料夹接口。
+     */
+    private fun injectAsrOwnerJs(view: WebView, url: String) {
+        val host = runCatching { Uri.parse(url).host }.getOrNull() ?: return
+        val asrHost = runCatching { Uri.parse(AsrClient.BASE_URL).host }.getOrNull() ?: return
+        if (!host.equals(asrHost, ignoreCase = true)) return
+        val token = AppPrefs.getAsrToken(this)
+        if (token.isBlank()) return
+        val js = "(function(){try{window.__lzAsrToken=function(){return " +
+            org.json.JSONObject.quote(token) + ";};}catch(e){}" +
+            "var b=document.getElementById('lzMoveBtn');if(b)b.style.display='';})();"
+        runCatching { view.evaluateJavascript(js, null) }
+    }
+
     private fun injectAdAutoHideJs(view: WebView, url: String) {
         if (!AdBlockEngine.isEnabled(this) || !AdBlockEngine.isAutoHideEnabled(this)) return
         val pageHost = runCatching { Uri.parse(url).host }.getOrNull()

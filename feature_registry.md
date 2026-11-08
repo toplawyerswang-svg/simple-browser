@@ -535,3 +535,13 @@
 | APP 侧 | 弹窗预填改用服务端返回的 `title`（旧服务端无字段回退 zip 名）；真名填写保存后，没手动改过记录名的把刚存真名单趟正则回填进标题（长昵称优先命中防子串误伤），以 `auto=true` rename；手动改过的以默认参数 rename（清标记）。关联代码：app.py `_wx_time_span/_wx_auto_title/_wx_is_default_zip_title`、upload/append/rename 三端点、AsrClient.WxChatShare.title+renameWxChatShare(keepAuto)、WxChatShareFlow.applyNamesToTitle |
 | 单测    | 服务端 19 例（真源提取函数 exec 实测：时间四形态/倒置/脏值、真名优先/排除自己/截断/去重/空映射回退、zip 名判定）；APP WxChatTitleTest 6 例（含长昵称子串误伤回归，JUnitCore 直跑 OK，连同下载批次回归 26 例全绿）                                                                                      |
 | 验证    | APK 已装机华为 FCP-AN10（install -r，版本仍 1.16.3/60 未 bump）；端到端（微信转发→弹窗预填默认名）待 asrsvc 部署后用户验收；装机冒烟时手机正被使用（微信登录页前台），启动冒烟并入验收跑，崩溃缓冲区干净                                                                                                    |
+
+### F-41 聊天记录分享页顶部加「移入资料夹」按钮
+
+| 项目    | 内容                                                                                                                                                                                                                          |
+| ----- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 需求    | 分享页顶部只有「复制全文」「Agent 数据（JSON）」（2026-11-08 用户提出）——加「移入资料夹」，转存完不用再回设置页长按操作                                                                                                                                  |
+| 鉴权设计 | 页面是公开链接（转发给 AI/他人可开），资料夹接口按 owner 令牌鉴权，页面自己不知道访客是谁。方案：**APP 注入 owner 令牌**——MainActivity 在 onPageFinished 对 asrsvc 域（与 AsrClient.BASE_URL 同 host）注入 `window.__lzAsrToken()` 并揭示按钮（页面默认 `display:none`）；外部浏览器/AI 无注入→看不到按钮也拿不到令牌；令牌仅注入用户自己的服务域，不暴露给任意网页。移动接口沿用 `_member_owned` 归属校验，跨用户的分享 404 |
+| 页面交互 | 弹层列资料夹（名称+有效条数），点选即移入（move 语义，自动从其他夹移出）；底部「新建并移入」输入名称先建后移；toast 反馈（已移入/已在该资料夹中/令牌失效/非本人分享）。服务端无新接口，复用 GET/POST /api/asr/folders 与 POST /api/asr/folders/<fid>/items                                                                                       |
+| APP 侧 | MainActivity.injectAsrOwnerJs（onPageFinished 挂钩，仅 asrsvc host 注入；AsrClient.BASE_URL 放开为公开常量）；**MainActivity 属下载批次未提交文件，本批次改动经 HEAD+插入构造单独暂存，未混入下载批次**                                                                                                     |
+| 验证    | JS 真源提取 node 语法检查 + 桩环境 10 例全过（无令牌不发请求/弹层结构/行 data-id/点击监听/令牌携带/移动目标与 kind/ref/直调路径）；py_compile 过；APK 编译过，装机因设备掉线未完成（华为 USB 掉线+vivo WiFi 不在线）；端到端（分享页点按钮→移入→设置页资料夹可见）待 asrsvc 部署后验收                                                                                                    |

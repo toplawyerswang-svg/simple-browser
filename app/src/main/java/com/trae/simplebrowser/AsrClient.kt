@@ -12,8 +12,9 @@ class AsrAuthException : Exception("令牌无效或已失效，请重新输入")
 
 /** 轻舟录音转写服务客户端。所有接口按用户令牌鉴权，任务按令牌身份隔离。 */
 object AsrClient {
-    // HTTPS 主通道走 api.orientlaw.cn；8800 HTTP 通道仅作服务器端备用，APP 不使用
-    private const val BASE_URL = "https://api.orientlaw.cn/api/asr"
+    // HTTPS 主通道走 api.orientlaw.cn；8800 HTTP 通道仅作服务器端备用，APP 不使用。
+    // 公开常量：分享页 owner 注入需按此域判定（MainActivity.injectAsrOwnerJs）
+    const val BASE_URL = "https://api.orientlaw.cn/api/asr"
 
     data class Options(
         val transcribe: Boolean,
