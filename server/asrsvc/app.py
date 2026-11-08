@@ -1585,6 +1585,63 @@ def _wx_parse_chat_text(text):
     return msgs
 
 
+def _wx_time_span(t1, t2):
+    """起止时间紧凑格式：同天带时刻，同年省前段，跨年全显。解析失败返回空串。"""
+    def parse(t):
+        try:
+            return time.strptime(str(t), "%Y-%m-%d %H:%M")
+        except (TypeError, ValueError):
+            return None
+    a, b = parse(t1), parse(t2)
+    if a is None:
+        return ""
+    if b is None or b < a:
+        b = a
+    da = "%d.%d.%d" % (a.tm_year, a.tm_mon, a.tm_mday)
+    if (a.tm_year, a.tm_mon, a.tm_mday) == (b.tm_year, b.tm_mon, b.tm_mday):
+        if (a.tm_hour, a.tm_min) == (b.tm_hour, b.tm_min):
+            return da  # 单条消息或起止倒置钳回起点：只显日期
+        return "%s %02d:%02d~%02d:%02d" % (da, a.tm_hour, a.tm_min, b.tm_hour, b.tm_min)
+    if (a.tm_year, a.tm_mon) == (b.tm_year, b.tm_mon):
+        return "%s~%d" % (da, b.tm_mday)
+    if a.tm_year == b.tm_year:
+        return "%s~%d.%d" % (da, b.tm_mon, b.tm_mday)
+    return "%s~%d.%d.%d" % (da, b.tm_year, b.tm_mon, b.tm_mday)
+
+
+def _wx_auto_title(participants, names, time_start, time_end):
+    """默认记录名：参与人（备注真名优先，其次微信昵称）+起止时间。
+    标记过自己昵称（names["__self__"]）的不进默认名；超过 3 人取前 3 人加「等N人」，
+    避免群聊把标题撑爆。"""
+    names = names or {}
+    self_nick = names.get("__self__")
+    disp = []
+    for n in participants or []:
+        if self_nick and n == self_nick:
+            continue
+        real = str(names.get(n) or "").strip()  # 映射值先剥空白，纯空白回退昵称
+        d = real or str(n or "").strip()
+        if d and d not in disp:
+            disp.append(d)
+    if not disp:
+        who = ""
+    elif len(disp) <= 3:
+        who = "、".join(disp)
+    else:
+        who = "%s等%d人" % ("、".join(disp[:3]), len(disp))
+    span = _wx_time_span(time_start, time_end)
+    if who and span:
+        return ("%s %s" % (who, span))[:200]
+    return who or span or "聊天记录"
+
+
+def _wx_is_default_zip_title(name):
+    """微信默认分享名「聊天记录_20261108_123456(.zip)」判定：前缀聊天记录+纯数字/下划线。
+    用户自定义命名的 zip 不匹配，标题原样保留。"""
+    stem = re.sub(r"\.zip$", "", (name or "").strip(), flags=re.I)
+    return bool(re.fullmatch(r"聊天记录[\d_]*", stem))
+
+
 def wxchat_parse_zip(zip_path, title):
     """解析聊天记录 zip：返回 (chat_dict, others)。others 为消息未引用的附件 (名, info)。"""
     total = 0
@@ -2186,6 +2243,13 @@ def upload_wxchat():
     finally:
         tmp.unlink(missing_ok=True)
     names = load_wxnames(user)
+    # 默认名：微信默认 zip 名（聊天记录_日期_时间）换成「参与人真名+起止时间」，
+    # 追加时按 auto_title 标记自动刷新；用户自定义命名的 zip 原样保留
+    auto_title = _wx_is_default_zip_title(title)
+    if auto_title:
+        title = _wx_auto_title(chat["participants"], names,
+                               chat.get("time_start"), chat.get("time_end"))
+        chat["title"] = title
     # 真名快照：生成时固化显示名，此后映射改动只影响新分享
     chat["name_display"] = {n: names.get(n, n) for n in chat["participants"]}
     pwd = "".join(secrets.choice(PWD_ALPHABET) for _ in range(PWD_LENGTH))
@@ -2193,15 +2257,16 @@ def upload_wxchat():
              "owner": user, "created_at": time.time(),
              "expires_at": time.time() + WXCHAT_HOURS * 3600,
              "validity_hours": WXCHAT_HOURS, "max_opens": 0, "opens": 0,
-             "filename": title, "chat": chat, "attachments": attachments}
+             "filename": title, "auto_title": auto_title,
+             "chat": chat, "attachments": attachments}
     save_share(share)
     print("wxchat saved by", user, ":", sid, len(chat["messages"]), "msgs,",
-          len(attachments), "attachments", flush=True)
+          len(attachments), "attachments, title:", title, flush=True)
     wxchat_kick_ocr(sid)
     return jsonify(share_id=sid, pwd=pwd,
                    url="%s/%s?pwd=%s" % (SHARE_BASE, sid, pwd),
                    validity_hours=WXCHAT_HOURS, expires_at=share["expires_at"],
-                   participants=chat["participants"])
+                   participants=chat["participants"], title=title)
 
 
 @app.post("/api/asr/wxchat/<sid>/append")
@@ -2325,18 +2390,25 @@ def append_wxchat(sid):
             display[p] = names.get(p, p)
     old_chat["name_display"] = display
     sh["attachments"] = (sh.get("attachments") or []) + final_atts
+    # 自动命名的记录随追加刷新默认名（时间范围延长、新参与人补入，按当前真名映射）；
+    # 手动改过名的（auto_title 标记已清）不动
+    if sh.get("auto_title"):
+        sh["filename"] = _wx_auto_title(old_chat["participants"], names,
+                                        old_chat.get("time_start"), old_chat.get("time_end"))
+        old_chat["title"] = sh["filename"]
     # 追加说明记录仍在使用：有效期从本次起重新计 30 天（链接与提取码不变）
     sh["expires_at"] = time.time() + WXCHAT_HOURS * 3600
     save_share(sh)
     added = len(kept)
     print("wxchat appended by", user, ":", sid, "+%d msgs" % added,
-          "-%d dups" % skipped, "+%d attachments" % len(final_atts), flush=True)
+          "-%d dups" % skipped, "+%d attachments" % len(final_atts),
+          "title:", sh["filename"], flush=True)
     wxchat_kick_ocr(sid)
     return jsonify(share_id=sid, pwd=sh["pwd"], appended=True, added_messages=added,
                    skipped_duplicates=skipped, message_count=len(merged),
                    url="%s/%s?pwd=%s" % (SHARE_BASE, sid, sh["pwd"]),
                    validity_hours=WXCHAT_HOURS, expires_at=sh["expires_at"],
-                   participants=old_chat["participants"])
+                   participants=old_chat["participants"], title=sh["filename"])
 
 
 def _wxchat_check(sid):
@@ -2679,6 +2751,10 @@ def wxchat_rename(sid):
         return jsonify(error="标题不能为空"), 400
     sh["filename"] = title
     sh["chat"]["title"] = title
+    # 手动改名（默认）视为用户定制，追加不再自动刷新；
+    # auto=true 为 APP 真名回填的默认名，保留自动刷新标记
+    if not j.get("auto"):
+        sh["auto_title"] = False
     save_share(sh)
     print("wxchat renamed by", user, ":", sid, "->", title, flush=True)
     return jsonify(renamed=True, title=title)

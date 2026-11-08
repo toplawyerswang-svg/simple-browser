@@ -39,8 +39,9 @@ object WxChatShareFlow {
     private const val NOTIF_ID_RESULT = 2003
     private var lastNotifyAt = 0L
 
-    /** 一次成功的转存：displayName 是记录标题（新建=zip 名可改，追加=目标记录名），
-     *  url 已含提取码；shareId/participants 用于转存后的真名填写（保存需刷新该份快照）。
+    /** 一次成功的转存：displayName 是记录标题（新建=服务端默认名「参与人真名+起止时间」可改，
+     *  追加=目标记录名；旧服务端无 title 字段时回退 zip 名），url 已含提取码；
+     *  shareId/participants 用于转存后的真名填写（保存需刷新该份快照）。
      *  appended=true 表示本次是追加进已有记录（链接不变，结果文案区分）；
      *  addedCount/skippedDups 为追加的新增条数与去重条数（新建时为 -1/0）。 */
     data class Success(val displayName: String, val url: String, val pwd: String,
@@ -211,8 +212,10 @@ object WxChatShareFlow {
                 }
             }
             Log.i(TAG, "wxchat share created: ${share.shareId} appended=${appendTo != null}")
-            // 追加时展示目标记录名；新建时展示 zip 名（真名弹窗里可改名）
-            return Success(appendTitle ?: displayName, share.url, share.pwd, share.expiresAt,
+            // 展示服务端保存的记录名（新建=默认名，追加=刷新后的目标记录名）；
+            // 旧服务端无 title 字段时回退：追加用目标记录名，新建用 zip 名（真名弹窗里可改名）
+            return Success(share.title ?: appendTitle ?: displayName,
+                share.url, share.pwd, share.expiresAt,
                 share.shareId, share.participants, appended = appendTo != null,
                 addedCount = share.addedMessages, skippedDups = share.skippedDuplicates)
         } finally {
@@ -252,6 +255,17 @@ object WxChatShareFlow {
             }  // 预填失败不阻断填写，编辑框留空即可
             fireUi(activity) { buildAndShowNameDialog(activity, results, mapping) }
         }.start()
+    }
+
+    /** 把刚保存的真名回填进默认名：单趟正则交替匹配（长昵称优先命中，替换文本不再被
+     *  二次扫描，防「短昵称是长真名子串」连环误伤）。 */
+    internal fun applyNamesToTitle(title: String, mapping: Map<String, String>): String {
+        val entries = mapping.entries.filter { it.key.isNotEmpty() }
+            .sortedByDescending { it.key.length }
+        if (entries.isEmpty()) return title
+        val pattern = entries.joinToString("|") { Regex.escape(it.key) }
+        val lookup = entries.associate { it.key to it.value }
+        return Regex(pattern).replace(title) { m -> lookup[m.value] ?: m.value }
     }
 
     private fun buildAndShowNameDialog(activity: MainActivity, results: List<Success>,
@@ -331,23 +345,37 @@ object WxChatShareFlow {
         dialog.setOnShowListener {
             val btn = dialog.getButton(AlertDialog.BUTTON_POSITIVE)
             btn.setOnClickListener {
-                val titles = nameEditors.mapNotNull { (s, edit) ->
-                    val v = edit.text.toString().trim()
-                        .replace(Regex("[\\p{Cntrl}]"), "").take(200)
-                    if (v.isNotEmpty() && v != s.displayName) s.shareId to v else null
-                }
                 val toSave = editors.mapNotNull { (nick, edit) ->
                     val v = edit.text.toString().trim()
                     if (v.isNotEmpty()) nick to v else null
                 }.toMap()
+                val manualTitles = LinkedHashMap<String, String>()   // 手动改名：追加不再自动刷新
+                val autoTitles = LinkedHashMap<String, String>()     // 真名回填默认名：保留自动刷新
+                for ((s, edit) in nameEditors) {
+                    val v = edit.text.toString().trim()
+                        .replace(Regex("[\\p{Cntrl}]"), "").take(200)
+                    if (v.isEmpty()) continue
+                    if (v != s.displayName) {
+                        manualTitles[s.shareId] = v
+                        continue
+                    }
+                    // 没动过记录名：把刚填的真名回填进默认名（映射此刻才落库，服务端标题里还是昵称）
+                    if (toSave.isNotEmpty()) {
+                        val t = applyNamesToTitle(v, toSave)
+                        if (t != v) autoTitles[s.shareId] = t
+                    }
+                }
                 btn.isEnabled = false
                 Thread {
                     try {
-                        for ((sid, t) in titles) AsrClient.renameWxChatShare(activity, sid, t)
+                        for ((sid, t) in manualTitles) AsrClient.renameWxChatShare(activity, sid, t)
+                        for ((sid, t) in autoTitles) {
+                            AsrClient.renameWxChatShare(activity, sid, t, keepAuto = true)
+                        }
                         if (toSave.isNotEmpty()) {
                             AsrClient.bulkSetWxNames(activity, toSave, results.first().shareId)
                         }
-                        val renamed = titles.toMap()
+                        val renamed = manualTitles + autoTitles
                         fireUi(activity) {
                             dialog.dismiss()
                             showResult(activity, results.map { s ->

@@ -240,7 +240,8 @@ object AsrClient {
     }
 
     /** 微信聊天记录转存分享：服务端解析 zip 后直接返回分享链接（30 天有效）。
-     *  participants 为记录中出现的微信昵称（转存后弹真名填写框用）。
+     *  participants 为记录中出现的微信昵称（转存后弹真名填写框用）；
+     *  title 为服务端保存的记录名（新建=参与人真名+起止时间的默认名，旧服务端无此字段为 null）。
      *  addedMessages/skippedDuplicates 仅追加时有意义：本次新增条数与判重跳过条数。 */
     data class WxChatShare(
         val shareId: String,
@@ -249,6 +250,7 @@ object AsrClient {
         val validityHours: Int,
         val expiresAt: Long,
         val participants: List<String>,
+        val title: String? = null,
         val addedMessages: Int = -1,
         val skippedDuplicates: Int = 0
     )
@@ -332,13 +334,17 @@ object AsrClient {
             validityHours = j.optInt("validity_hours", 720),
             expiresAt = j.optLong("expires_at", 0L),
             participants = participants,
+            title = j.optString("title").trim().takeIf { it.isNotEmpty() },
             addedMessages = j.optInt("added_messages", -1),
             skippedDuplicates = j.optInt("skipped_duplicates", 0)
         )
     }
 
-    /** 重命名聊天记录分享（分享页标题与 Agent JSON 的 title 同步生效）。 */
-    fun renameWxChatShare(context: Context, shareId: String, title: String) {
+    /** 重命名聊天记录分享（分享页标题与 Agent JSON 的 title 同步生效）。
+     *  keepAuto=true（真名回填生成的默认名）保留服务端 auto_title 标记，追加仍自动刷新；
+     *  默认 false 视为用户手动定制，追加不再自动改名。 */
+    fun renameWxChatShare(context: Context, shareId: String, title: String,
+                          keepAuto: Boolean = false) {
         val conn = (URL("$BASE_URL/wxchat/$shareId/rename").openConnection() as HttpURLConnection).apply {
             requestMethod = "POST"
             connectTimeout = 15000
@@ -347,8 +353,10 @@ object AsrClient {
             setRequestProperty("X-LZ-Token", token(context))
             setRequestProperty("Content-Type", "application/json")
         }
+        val payload = JSONObject().put("title", title)
+        if (keepAuto) payload.put("auto", true)
         conn.outputStream.use {
-            it.write(JSONObject().put("title", title).toString().toByteArray(Charsets.UTF_8))
+            it.write(payload.toString().toByteArray(Charsets.UTF_8))
         }
         val code = conn.responseCode
         val body = readBody(conn, code)
