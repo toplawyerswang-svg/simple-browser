@@ -54,6 +54,7 @@ import com.trae.simplebrowser.core.DownloadPayload
 import com.trae.simplebrowser.core.DownloadRecord
 import com.trae.simplebrowser.core.DownloadStatus
 import com.trae.simplebrowser.core.HistoryStore
+import com.trae.simplebrowser.core.HttpAuthEntries
 import com.trae.simplebrowser.core.HttpAuthStore
 import com.trae.simplebrowser.core.IconCropMath
 import com.trae.simplebrowser.core.MediaProbeLogic
@@ -1058,7 +1059,7 @@ class MainActivity : AppCompatActivity() {
                 host: String?,
                 realm: String?
             ) {
-                showHttpAuthPrompt(handler, host, realm)
+                showHttpAuthPrompt(view, handler, host, realm)
             }
         }
 
@@ -1646,18 +1647,30 @@ class MainActivity : AppCompatActivity() {
     /**
      * HTTP Basic 认证登录弹窗（WebView 默认静默取消 401，必须由应用实现）：
      * - 有「记住的密码」则预填账号密码，点「登录」即可；
-     * - 勾选记住则按 域名+区域 保存，取消勾选清除已存密码；
+     * - 勾选记住则按 源(协议+域名+端口)+区域+系统路径 保存——同一服务器的多个系统、
+     *   不同子域名的站点、同账号名不同密码各自独立，互不覆盖；取消勾选清除当前系统的记录；
+     * - 系统路径提示取页面 URL 首段，页面域名与质询域名不一致时回退 "/"（多系统共用）；
      * - 登录成功后引擎自带会话级凭据缓存，同站子资源/XHR 不再质询；
      * - 并发 401 只弹一个窗，其余直接 cancel，避免弹窗叠加。
      */
-    private fun showHttpAuthPrompt(handler: HttpAuthHandler, host: String?, realm: String?) {
+    private fun showHttpAuthPrompt(view: WebView?, handler: HttpAuthHandler, host: String?, realm: String?) {
         if (isFinishing || httpAuthDialogShowing) {
             handler.cancel()
             return
         }
         httpAuthDialogShowing = true
-        Log.i(logTag, "HTTP auth prompt: host=$host realm=$realm")
-        val saved = HttpAuthStore.get(this, host, realm)
+        val parsed = view?.url?.let { runCatching { Uri.parse(it) }.getOrNull() }
+        val scheme = parsed?.scheme?.lowercase()?.takeIf { it == "http" || it == "https" }
+        val sameHost = scheme != null && !parsed?.host.isNullOrBlank() &&
+            parsed?.host?.lowercase() == host?.lowercase()
+        val originKey = if (sameHost) {
+            HttpAuthEntries.originKey(scheme, host?.lowercase(), parsed?.port ?: -1)
+        } else {
+            HttpAuthEntries.originKey(null, host?.lowercase(), -1)
+        }
+        val appPath = if (sameHost) HttpAuthEntries.appPathOf(parsed?.path) else "/"
+        Log.i(logTag, "HTTP auth prompt: host=$host realm=$realm origin=$originKey appPath=$appPath")
+        val saved = HttpAuthStore.get(this, originKey, realm, appPath)
         val content = layoutInflater.inflate(R.layout.dialog_http_auth, null)
         val userInput = content.findViewById<EditText>(R.id.http_auth_username)
         val passInput = content.findViewById<EditText>(R.id.http_auth_password)
@@ -1679,9 +1692,9 @@ class MainActivity : AppCompatActivity() {
             val user = userInput.text.toString()
             val pass = passInput.text.toString()
             if (rememberBox.isChecked) {
-                HttpAuthStore.put(this, host, realm, user, pass)
+                HttpAuthStore.put(this, originKey, realm, appPath, user, pass)
             } else {
-                HttpAuthStore.clear(this, host, realm)
+                HttpAuthStore.clear(this, originKey, realm, appPath)
             }
             dialog.dismiss()
             handler.proceed(user, pass)
