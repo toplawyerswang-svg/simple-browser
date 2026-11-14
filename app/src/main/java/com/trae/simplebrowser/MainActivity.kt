@@ -10,6 +10,7 @@ import android.app.DownloadManager
 import android.content.pm.PackageManager
 import android.content.pm.ShortcutInfo
 import android.content.pm.ShortcutManager
+import android.content.ContentUris
 import android.content.ContentValues
 import android.net.Uri
 import android.os.Build
@@ -45,8 +46,11 @@ import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.getSystemService
 import androidx.core.graphics.drawable.IconCompat
+import java.io.File
 import com.trae.simplebrowser.core.AdBlockEngine
+import com.trae.simplebrowser.core.DownloadFilename
 import com.trae.simplebrowser.core.DownloadKind
+import com.trae.simplebrowser.core.DownloadPayload
 import com.trae.simplebrowser.core.DownloadRecord
 import com.trae.simplebrowser.core.DownloadStatus
 import com.trae.simplebrowser.core.HistoryStore
@@ -932,6 +936,15 @@ class MainActivity : AppCompatActivity() {
             findCountView?.text = getString(R.string.find_count_fmt, activeMatchOrdinal + 1, numberOfMatches)
         }
 
+        // 普通文件下载（PDF/文档/压缩包等，视频仍走浮窗嗅探）：系统 DownloadManager
+        // 下载到 Download/轻舟浏览器/ 并登记设置页下载管理（进度/完成靠既有广播自动刷新）
+        webView.setDownloadListener { url, userAgent, contentDisposition, mimetype, _ ->
+            startWebFileDownload(url, userAgent, contentDisposition, mimetype, profileName)
+        }
+        // blob: 下载桥：SPA 页面的 URL.createObjectURL 下载，字节在 JS 内存，
+        // DownloadManager 摸不到，注入 JS 经此桥回传字节落盘
+        webView.addJavascriptInterface(WebFileDownloadBridge(), "LightboatDownload")
+
         webView.webViewClient = object : WebViewClient() {
             private fun handleNonHttpUri(uri: Uri): Boolean {
                 return handleExternalOrSpecialUri(uri)
@@ -994,7 +1007,8 @@ class MainActivity : AppCompatActivity() {
                 }
                 runMixedContentFixThrottled(view)
                 injectAdAutoHideJs(view, url)
-                injectAsrOwnerJs(view, url)
+                injectBlobStorePatch(view, url)
+                AsrOwnerInject.inject(this@MainActivity, view, url)
                 // 浏览历史：仅记录 http(s) 主文档（file://、intent: 等不记）
                 if (url.startsWith("http")) {
                     AppPrefs.addHistory(this@MainActivity, currentTitle, url)
@@ -1011,6 +1025,7 @@ class MainActivity : AppCompatActivity() {
                 }
                 maybeShowCrossIdentityLoginHint(view, url)
                 runMixedContentFixThrottled(view)
+                injectBlobStorePatch(view, url)
             }
 
             override fun onLoadResource(view: WebView, url: String) {
@@ -1072,6 +1087,13 @@ class MainActivity : AppCompatActivity() {
                 // 优先用 hitTestResult 直接拿点击链接地址（target=_blank 场景最常见）
                 val hitUrl = view.hitTestResult?.extra
                 if (!hitUrl.isNullOrBlank() &&
+                    (hitUrl.startsWith("blob:") || hitUrl.startsWith("data:"))
+                ) {
+                    // 新窗口目标是内存文件（SPA 下载常用 window.open(blob:)）：直接转下载，不开新标签
+                    startWebFileDownload(hitUrl, null, null, null, currentProfileName())
+                    return true
+                }
+                if (!hitUrl.isNullOrBlank() &&
                     (hitUrl.startsWith("http://") || hitUrl.startsWith("https://"))
                 ) {
                     openNewTab(hitUrl)
@@ -1093,18 +1115,32 @@ class MainActivity : AppCompatActivity() {
                         }
                     }
 
+                    private fun capturePayload(url: String?) {
+                        if (captured) return
+                        val u = url ?: return
+                        if (!u.startsWith("blob:") && !u.startsWith("data:")) return
+                        captured = true
+                        runOnUiThread {
+                            if (!isFinishing) startWebFileDownload(u, null, null, null, currentProfileName())
+                            probe.destroy()
+                        }
+                    }
+
                     override fun shouldOverrideUrlLoading(v: WebView, request: WebResourceRequest): Boolean {
+                        capturePayload(request.url?.toString())
                         capture(request.url?.toString())
                         return true
                     }
 
                     @Suppress("OVERRIDE_DEPRECATION")
                     override fun shouldOverrideUrlLoading(v: WebView, url: String): Boolean {
+                        capturePayload(url)
                         capture(url)
                         return true
                     }
 
                     override fun onPageStarted(v: WebView, url: String, favicon: android.graphics.Bitmap?) {
+                        capturePayload(url)
                         capture(url)
                     }
                 }
@@ -1512,23 +1548,6 @@ class MainActivity : AppCompatActivity() {
         WebResourceResponse("text/plain", "utf-8", ByteArrayInputStream(ByteArray(0)))
 
     /** 保守自动隐藏：广告关/白名单站点不注入 */
-    /**
-     * asrsvc 分享页 owner 注入：把令牌交给页面（window.__lzAsrToken）并揭示「移入资料夹」按钮
-     * （页面按钮默认 display:none）。仅对 asrsvc 域注入——令牌不能暴露给任意网页；
-     * 外部浏览器/AI 打开同一链接没有注入，看不到该按钮也无法调用资料夹接口。
-     */
-    private fun injectAsrOwnerJs(view: WebView, url: String) {
-        val host = runCatching { Uri.parse(url).host }.getOrNull() ?: return
-        val asrHost = runCatching { Uri.parse(AsrClient.BASE_URL).host }.getOrNull() ?: return
-        if (!host.equals(asrHost, ignoreCase = true)) return
-        val token = AppPrefs.getAsrToken(this)
-        if (token.isBlank()) return
-        val js = "(function(){try{window.__lzAsrToken=function(){return " +
-            org.json.JSONObject.quote(token) + ";};}catch(e){}" +
-            "var b=document.getElementById('lzMoveBtn');if(b)b.style.display='';})();"
-        runCatching { view.evaluateJavascript(js, null) }
-    }
-
     private fun injectAdAutoHideJs(view: WebView, url: String) {
         if (!AdBlockEngine.isEnabled(this) || !AdBlockEngine.isAutoHideEnabled(this)) return
         val pageHost = runCatching { Uri.parse(url).host }.getOrNull()
@@ -2012,6 +2031,14 @@ class MainActivity : AppCompatActivity() {
                     startActivity(Intent(this, HistoryActivity::class.java))
                     true
                 }
+                R.id.menu_downloads -> {
+                    // 直达设置页下载管理标签（进度/已下载文件都在这里）
+                    startActivity(
+                        Intent(this, SettingsActivity::class.java)
+                            .putExtra(SettingsActivity.EXTRA_INITIAL_TAB, SettingsActivity.TAB_DOWNLOADS)
+                    )
+                    true
+                }
                 R.id.menu_find_in_page -> {
                     showFindBar()
                     true
@@ -2264,6 +2291,326 @@ class MainActivity : AppCompatActivity() {
             }
     }
 
+    /** WebView DownloadListener 的文件下载登记 id 前缀（区别于视频下载的 "dm_"，完成回调按前缀跳过视频小文件检查） */
+    private val fileDownloadIdPrefix = "file_dm_"
+
+    /**
+     * 普通文件下载（WebView DownloadListener 触发）统一路由：
+     * - http(s)：系统 DownloadManager 下载到 Download/轻舟浏览器/，进度与完成由系统通知 + 下载管理呈现；
+     * - data:：URL 本身带字节，Java 直接解码落盘；
+     * - blob:：SPA 页面（URL.createObjectURL）的下载形态，字节在 JS 内存里，
+     *   注入 JS 经 blob 映射表取回后落盘（DownloadManager 无法下载 blob）；
+     * - content:/file:：本地页面引用的本地文件，复制落盘。
+     * POST 表单下载 WebView 引擎层拿不到请求体，不支持（Chrome 为自研网络栈）。
+     */
+    private fun startWebFileDownload(
+        url: String,
+        userAgent: String?,
+        contentDisposition: String?,
+        mimetype: String?,
+        profileName: String
+    ) {
+        when {
+            url.startsWith("blob:") -> startBlobDownload(url, mimetype, currentWebViewSafe())
+            url.startsWith("data:") -> savePayloadToDownloads(
+                suggested = DownloadFilename.fromContentDisposition(contentDisposition.orEmpty()),
+                dataUrl = url
+            )
+            url.startsWith("http") -> startHttpFileDownload(url, userAgent, contentDisposition, mimetype, profileName)
+            url.startsWith("content://") || url.startsWith("file://") ->
+                copyLocalDownload(url, mimetype)
+            else -> {
+                Toast.makeText(this, getString(R.string.video_download_start_failed), Toast.LENGTH_SHORT).show()
+            }
+        }
+    }
+
+    /** 本地文件（content:///file:// 页面链接）复制到 Download/轻舟浏览器/ 并登记 */
+    private fun copyLocalDownload(url: String, mimetype: String?) {
+        val fileName = DownloadFilename.resolve(url, null, mimetype)
+        Thread {
+            val bytes = runCatching {
+                if (url.startsWith("content://")) {
+                    contentResolver.openInputStream(Uri.parse(url))?.use { it.readBytes() }
+                        ?: throw IllegalStateException("openInputStream null")
+                } else {
+                    File(Uri.parse(url).path.orEmpty()).readBytes()
+                }
+            }.onFailure { Log.e(logTag, "FileDownload: local copy read failed", it) }.getOrNull()
+            if (bytes == null) {
+                runOnUiThread {
+                    if (!isFinishing) Toast.makeText(this, getString(R.string.video_download_start_failed), Toast.LENGTH_SHORT).show()
+                }
+                return@Thread
+            }
+            val mime = runCatching {
+                if (url.startsWith("content://")) contentResolver.getType(Uri.parse(url)).orEmpty()
+                else mimetype.orEmpty()
+            }.getOrDefault("").ifBlank { mimetype.orEmpty() }
+            val savedPath = runCatching { publishBytesToDownloads(fileName, mime.ifBlank { "application/octet-stream" }, bytes) }
+                .onFailure { Log.e(logTag, "FileDownload: local copy save failed", it) }
+                .getOrNull()
+            if (savedPath == null) {
+                runOnUiThread {
+                    if (!isFinishing) Toast.makeText(this, getString(R.string.video_download_start_failed), Toast.LENGTH_SHORT).show()
+                }
+                return@Thread
+            }
+            downloadStore.upsert(
+                DownloadRecord(
+                    id = "local_${System.currentTimeMillis()}",
+                    kind = DownloadKind.DIRECT,
+                    title = fileName.substringBeforeLast('.'),
+                    fileName = fileName,
+                    path = savedPath,
+                    uri = "",
+                    status = DownloadStatus.DONE,
+                    progress = 100,
+                    detail = getString(R.string.video_download_saved_path_fmt, savedPath),
+                    createdAt = System.currentTimeMillis(),
+                    finishedAt = System.currentTimeMillis()
+                )
+            )
+            runOnUiThread {
+                if (!isFinishing) Toast.makeText(this, getString(R.string.video_download_saved_path_fmt, savedPath), Toast.LENGTH_SHORT).show()
+            }
+        }.start()
+    }
+
+    /** blob: 下载：注入 JS 从页面内存取字节（优先 blob 映射表，兜底 fetch → FileReader → 桥回调） */
+    private fun startBlobDownload(blobUrl: String, mimetype: String?, webView: WebView?) {
+        if (webView == null) {
+            Toast.makeText(this, getString(R.string.video_download_start_failed), Toast.LENGTH_SHORT).show()
+            return
+        }
+        Toast.makeText(this, getString(R.string.file_download_fetching), Toast.LENGTH_SHORT).show()
+        val fallbackName = "download_${VideoUrlSniffer.fileTimestamp()}"
+        val js = buildBlobFetchJs(blobUrl, fallbackName)
+        webView.post { runCatching { webView.evaluateJavascript(js, null) } }
+        Log.i(logTag, "FileDownload: blob fetch injected (${blobUrl.take(50)})")
+    }
+
+    /**
+     * blob 下载映射表补丁（幂等，页面加载时注入）：
+     * 页面普遍「createObjectURL → a.click() → 立即 revokeObjectURL」（如研究部项目 downloadBlob），
+     * DownloadListener 触发时 blob URL 已失效，fetch 必败。补丁在 createObjectURL 时留一份 Blob 引用，
+     * revoke 不真删；同时全局捕获 a[download] 点击记下建议文件名。内存防护：上限 20 条，FIFO 淘汰。
+     */
+    private fun injectBlobStorePatch(view: WebView, url: String) {
+        if (!url.startsWith("http")) return
+        view.evaluateJavascript(BLOB_STORE_PATCH_JS, null)
+    }
+
+    private val BLOB_STORE_PATCH_JS = """
+        (function(){
+          if (window.__lbBlobPatch) return;
+          window.__lbBlobPatch = true;
+          var store = {};
+          window.__lbBlobStore = store;
+          window.__lbLastName = '';
+          var oc = URL.createObjectURL;
+          URL.createObjectURL = function(obj){
+            var u = oc.apply(URL, arguments);
+            try {
+              store[u] = obj;
+              var ks = Object.keys(store);
+              if (ks.length > 20) delete store[ks[0]];
+            } catch(e){}
+            return u;
+          };
+          var orr = URL.revokeObjectURL;
+          URL.revokeObjectURL = function(u){
+            try { orr.apply(URL, arguments); } catch(e){}
+          };
+          document.addEventListener('click', function(ev){
+            try {
+              var t = ev.target;
+              if (t && t.tagName === 'A' && t.download) {
+                window.__lbLastName = String(t.download);
+              }
+            } catch(e){}
+          }, true);
+        })();
+    """.trimIndent()
+
+    /** 组装 blob 取字节脚本：先查映射表（revoke 后仍可用），没有再 fetch；url/fallback 经 JSON 转义防注入 */
+    private fun buildBlobFetchJs(blobUrl: String, fallbackName: String): String {
+        val jsonUrl = org.json.JSONObject.quote(blobUrl)
+        val jsonName = org.json.JSONObject.quote(fallbackName)
+        return """
+        (function(){
+          try {
+            var url = $jsonUrl;
+            var store = window.__lbBlobStore || {};
+            var blob = store[url];
+            var nm = (window.__lbLastName || '').trim();
+            if (!nm) {
+              var el = document.activeElement;
+              if (el && el.getAttribute) {
+                nm = el.getAttribute('download') || el.innerText || el.textContent || '';
+                nm = (nm || '').trim().split('\n')[0].slice(0, 60);
+              }
+            }
+            var deliver = function(b, name){
+              var fr = new FileReader();
+              fr.onload = function(){ LightboatDownload.saveFromJs(name || $jsonName, b.type || '', String(fr.result)); };
+              fr.onerror = function(){ LightboatDownload.failFromJs('read blob failed'); };
+              fr.readAsDataURL(b);
+            };
+            if (blob && typeof Blob !== 'undefined' && blob instanceof Blob) { deliver(blob, nm); return; }
+            fetch(url).then(function(r){ return r.blob(); }).then(function(b){ deliver(b, nm); })
+              .catch(function(e){ LightboatDownload.failFromJs('fetch failed: ' + e); });
+          } catch(e) { LightboatDownload.failFromJs(String(e)); }
+        })();
+        """.trimIndent()
+    }
+
+    /** JS 桥取回字节的落盘入口（dataUrl 形如 data:<mime>;base64,xxx） */
+    private fun savePayloadToDownloads(suggested: String?, dataUrl: String) {
+        val decoded = DownloadPayload.decodeDataUrl(dataUrl)
+        if (decoded == null) {
+            Toast.makeText(this, getString(R.string.video_download_start_failed), Toast.LENGTH_SHORT).show()
+            Log.w(logTag, "FileDownload: payload decode failed (${dataUrl.take(40)})")
+            return
+        }
+        val (mime, bytes) = decoded
+        val name = DownloadPayload.resolveName(suggested, mime, VideoUrlSniffer.fileTimestamp())
+        Thread {
+            val savedPath = runCatching { publishBytesToDownloads(name, mime, bytes) }
+                .onFailure { Log.e(logTag, "FileDownload: payload save failed", it) }
+                .getOrNull()
+            if (savedPath == null) {
+                runOnUiThread {
+                    if (!isFinishing) Toast.makeText(this, getString(R.string.video_download_start_failed), Toast.LENGTH_SHORT).show()
+                }
+                return@Thread
+            }
+            downloadStore.upsert(
+                DownloadRecord(
+                    id = "js_${System.currentTimeMillis()}",
+                    kind = DownloadKind.DIRECT,
+                    title = name.substringBeforeLast('.'),
+                    fileName = name,
+                    path = savedPath,
+                    uri = "",
+                    status = DownloadStatus.DONE,
+                    progress = 100,
+                    detail = getString(R.string.video_download_saved_path_fmt, savedPath),
+                    createdAt = System.currentTimeMillis(),
+                    finishedAt = System.currentTimeMillis()
+                )
+            )
+            runOnUiThread {
+                if (!isFinishing) Toast.makeText(this, getString(R.string.video_download_saved_path_fmt, savedPath), Toast.LENGTH_SHORT).show()
+            }
+        }.start()
+    }
+
+    /** 字节落盘 Download/轻舟浏览器/（API29+ MediaStore，旧版本直写），与 VideoDownloadService 同套路 */
+    private fun publishBytesToDownloads(displayName: String, mimeType: String, bytes: ByteArray): String {
+        return if (Build.VERSION.SDK_INT >= 29) {
+            val values = ContentValues().apply {
+                put(android.provider.MediaStore.MediaColumns.DISPLAY_NAME, displayName)
+                put(android.provider.MediaStore.MediaColumns.MIME_TYPE, mimeType)
+                put(android.provider.MediaStore.MediaColumns.RELATIVE_PATH, "Download/轻舟浏览器")
+                put(android.provider.MediaStore.MediaColumns.IS_PENDING, 1)
+            }
+            val uri = contentResolver.insert(android.provider.MediaStore.Downloads.EXTERNAL_CONTENT_URI, values)
+                ?: throw IllegalStateException("MediaStore insert failed")
+            contentResolver.openOutputStream(uri)?.use { it.write(bytes) }
+                ?: throw IllegalStateException("openOutputStream failed")
+            contentResolver.update(uri, ContentValues().apply {
+                put(android.provider.MediaStore.MediaColumns.IS_PENDING, 0)
+            }, null, null)
+            "Download/轻舟浏览器/$displayName"
+        } else {
+            val dir = File(
+                Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS),
+                "轻舟浏览器"
+            )
+            dir.mkdirs()
+            File(dir, displayName).writeBytes(bytes)
+            "Download/轻舟浏览器/$displayName"
+        }
+    }
+
+    /** 供 JS 桥回调的字节下载（blob/data），方法名固定与注入 JS 对应 */
+    inner class WebFileDownloadBridge {
+        @android.webkit.JavascriptInterface
+        fun saveFromJs(suggestedName: String?, mime: String, dataUrl: String) {
+            runOnUiThread {
+                savePayloadToDownloads(suggestedName?.takeIf { it.isNotBlank() }, dataUrl)
+            }
+        }
+
+        @android.webkit.JavascriptInterface
+        fun failFromJs(message: String) {
+            Log.w(logTag, "FileDownload: bridge fail: $message")
+            runOnUiThread {
+                if (!isFinishing) Toast.makeText(this@MainActivity, getString(R.string.video_download_start_failed), Toast.LENGTH_SHORT).show()
+            }
+        }
+    }
+
+    /** http(s) 下载：系统 DownloadManager + 登记下载管理 */
+    private fun startHttpFileDownload(
+        url: String,
+        userAgent: String?,
+        contentDisposition: String?,
+        mimetype: String?,
+        profileName: String
+    ) {
+        val dm = getSystemService<DownloadManager>() ?: run {
+            Toast.makeText(this, getString(R.string.video_download_start_failed), Toast.LENGTH_SHORT).show()
+            return
+        }
+        val fileName = DownloadFilename.resolve(url, contentDisposition, mimetype)
+        val referer = currentWebViewSafe()?.url.orEmpty().ifBlank { url }
+        // Cookie 按当前身份的 Profile 取，否则需要登录的文件会下成登录页
+        val cookie = runCatching {
+            ProfileManager.cookieManager(profileName).getCookie(url)
+        }.getOrNull()
+        val request = DownloadManager.Request(Uri.parse(url)).apply {
+            setTitle(fileName)
+            setDescription(getString(R.string.app_name))
+            setDestinationInExternalPublicDir(Environment.DIRECTORY_DOWNLOADS, "轻舟浏览器/$fileName")
+            setNotificationVisibility(DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED)
+            setAllowedOverMetered(true)
+            setAllowedOverRoaming(true)
+            addRequestHeader("Referer", referer)
+            cookie?.takeIf { it.isNotBlank() }?.let { addRequestHeader("Cookie", it) }
+            (userAgent ?: settings_agent()).takeIf { it.isNotBlank() }?.let { addRequestHeader("User-Agent", it) }
+        }
+        runCatching { dm.enqueue(request) }
+            .onSuccess { id ->
+                Log.i(logTag, "FileDownload: enqueued id=$id file=$fileName url=${url.take(70)}")
+                downloadStore.upsert(
+                    DownloadRecord(
+                        id = "$fileDownloadIdPrefix$id",
+                        kind = DownloadKind.DIRECT,
+                        title = Uri.parse(url).host ?: fileName,
+                        fileName = fileName,
+                        path = "Download/轻舟浏览器/$fileName",
+                        uri = "",
+                        status = DownloadStatus.RUNNING,
+                        progress = 0,
+                        detail = getString(R.string.download_status_downloading),
+                        createdAt = System.currentTimeMillis(),
+                        finishedAt = 0L
+                    )
+                )
+                Toast.makeText(this, getString(R.string.file_download_started_fmt, fileName), Toast.LENGTH_SHORT).show()
+            }
+            .onFailure {
+                Log.e(logTag, "FileDownload: enqueue failed", it)
+                Toast.makeText(this, getString(R.string.video_download_start_failed), Toast.LENGTH_SHORT).show()
+            }
+    }
+
+    /** 当前 WebView 的 UA（DownloadListener 未带 UA 时的兜底） */
+    private fun settings_agent(): String =
+        runCatching { currentWebViewSafe()?.settings?.userAgentString.orEmpty() }.getOrDefault("")
+
     /** 直链视频：系统 DownloadManager 下载到 Download/轻舟浏览器/，同时登记到设置页下载管理 */
     private fun downloadDirectVideo(url: String, referer: String, cookie: String?, ua: String) {
         val dm = getSystemService<DownloadManager>()
@@ -2316,7 +2663,12 @@ class MainActivity : AppCompatActivity() {
         override fun onReceive(context: Context, intent: Intent) {
             val id = intent.getLongExtra(DownloadManager.EXTRA_DOWNLOAD_ID, -1)
             if (id == -1L) return
-            val recordId = "dm_$id"
+            // 普通文件下载登记为 "file_dm_<id>"，视频直链为 "dm_<id>"；按实际登记选用
+            val recordId = if (downloadStore.load().any { it.id == "$fileDownloadIdPrefix$id" }) {
+                "$fileDownloadIdPrefix$id"
+            } else {
+                "dm_$id"
+            }
             val dm = getSystemService<DownloadManager>() ?: return
             val cursor = dm.query(DownloadManager.Query().setFilterById(id))
             cursor?.use { c ->
@@ -2329,11 +2681,14 @@ class MainActivity : AppCompatActivity() {
                 val reason = if (reasonIdx >= 0) c.getInt(reasonIdx) else 0
                 val localUri = if (localUriIdx >= 0) c.getString(localUriIdx) else null
                 val totalBytes = if (sizeIdx >= 0) c.getLong(sizeIdx) else -1L
-                Log.i(logTag, "VideoDownload: dm $id finished status=$status size=$totalBytes uri=$localUri")
+                Log.i(logTag, "Download: dm $id ($recordId) finished status=$status size=$totalBytes uri=$localUri")
+                val isVideoRecord = recordId == "dm_$id"
                 if (status == DownloadManager.STATUS_SUCCESSFUL &&
+                    isVideoRecord &&
                     VideoUrlSniffer.isSuspiciouslySmall(totalBytes)
                 ) {
-                    // 下载成功但内容过小：多半是防盗链错误页/广告，按失败处理（修复"瞬间完成"）
+                    // 视频下载成功但内容过小：多半是防盗链错误页/广告，按失败处理（修复"瞬间完成"）；
+                    // 普通文件（PDF/图片等）本来就可能小于阈值，不做此检查
                     val detail = getString(R.string.video_download_error_too_small)
                     downloadStore.updateById(recordId) { rec ->
                         rec.copy(
@@ -2383,7 +2738,7 @@ class MainActivity : AppCompatActivity() {
                 )?.use { c ->
                     if (c.moveToFirst()) {
                         val rowId = c.getLong(0)
-                        return "content://${MediaStore.Downloads.EXTERNAL_CONTENT_URI.authority}/downloads/$rowId"
+                        return ContentUris.withAppendedId(MediaStore.Downloads.EXTERNAL_CONTENT_URI, rowId).toString()
                     }
                 }
             }

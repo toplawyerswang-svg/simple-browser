@@ -54,6 +54,12 @@ class SettingsActivity : AppCompatActivity() {
     private lateinit var binding: ActivitySettingsBinding
     private val logTag = "Settings"
 
+    companion object {
+        /** 跳转时直接选中的标签：MainActivity 菜单「下载内容」用 */
+        const val EXTRA_INITIAL_TAB = "extra_initial_tab"
+        const val TAB_DOWNLOADS = 1
+    }
+
     private val downloadStore by lazy { DownloadStoreFile(this) }
 
     // ---------- 下载管理批量选择状态 ----------
@@ -187,6 +193,12 @@ class SettingsActivity : AppCompatActivity() {
         setupWxChatManage()
         setupDownloadManage()
 
+        // 外部直达指定标签（如浏览器菜单「下载内容」→ 下载管理）
+        val initialTab = intent.getIntExtra(EXTRA_INITIAL_TAB, -1)
+        if (initialTab in 0 until binding.settingsTabs.tabCount) {
+            binding.settingsTabs.getTabAt(initialTab)?.select()
+        }
+
         val versionName = runCatching {
             packageManager.getPackageInfo(packageName, 0).versionName
         }.getOrDefault("Unknown")
@@ -200,6 +212,10 @@ class SettingsActivity : AppCompatActivity() {
         refreshAdBlockStatus()
         // 从资料夹页返回时刷新可见页签：夹内移出/添加都会改变根目录内容
         when (binding.settingsTabs.selectedTabPosition) {
+            1 -> {
+                renderDownloads()
+                startDownloadProgressPolling()
+            }
             2 -> if (AsrAuth.hasToken(this)) loadTasks()
             3 -> if (AsrAuth.hasToken(this)) loadWxShares()
         }
@@ -481,6 +497,7 @@ class SettingsActivity : AppCompatActivity() {
                 binding.pageDownloads.visibility = if (tab.position == 1) View.VISIBLE else View.GONE
                 binding.pageAsr.visibility = if (tab.position == 2) View.VISIBLE else View.GONE
                 binding.pageWxchat.visibility = if (tab.position == 3) View.VISIBLE else View.GONE
+                if (tab.position == 1) startDownloadProgressPolling()
                 if (tab.position == 2) {
                     refreshAsrPanel()
                     if (!asrLoaded) loadTasks()
@@ -491,13 +508,39 @@ class SettingsActivity : AppCompatActivity() {
                 }
             }
 
-            override fun onTabUnselected(tab: TabLayout.Tab) {}
+            override fun onTabUnselected(tab: TabLayout.Tab) {
+                stopDownloadProgressPolling()
+            }
             override fun onTabReselected(tab: TabLayout.Tab) {
                 if (tab.position == 1) renderDownloads()
                 if (tab.position == 2) loadTasks()
                 if (tab.position == 3) loadWxShares()
             }
         })
+    }
+
+    // ---------- 下载进度轮询：直链下载进行中每秒重渲染，进度条/百分比动起来 ----------
+
+    private val progressHandler = android.os.Handler(android.os.Looper.getMainLooper())
+    private val progressTicker = object : Runnable {
+        override fun run() {
+            val hasRunning = downloadStore.load().any { it.status == DownloadStatus.RUNNING }
+            if (!hasRunning) {
+                stopDownloadProgressPolling()
+                return
+            }
+            renderDownloads()
+            progressHandler.postDelayed(this, 1000L)
+        }
+    }
+
+    private fun startDownloadProgressPolling() {
+        stopDownloadProgressPolling()
+        progressHandler.post(progressTicker)
+    }
+
+    private fun stopDownloadProgressPolling() {
+        progressHandler.removeCallbacks(progressTicker)
     }
 
     // ---------- 音频识别：令牌面板 / 列表 / 播放 ----------
@@ -1156,7 +1199,12 @@ class SettingsActivity : AppCompatActivity() {
                 useWideViewPort = true
                 loadWithOverviewMode = true
             }
-            wv.webViewClient = WebViewClient()
+            wv.webViewClient = object : WebViewClient() {
+                override fun onPageFinished(view: WebView, url: String) {
+                    // 分享页「移入资料夹」按钮揭示：与主浏览器同一套 owner 注入
+                    AsrOwnerInject.inject(this@SettingsActivity, view, url)
+                }
+            }
             // 附件下载交给系统下载器（分享页的「下载」链接）
             wv.setDownloadListener { dlUrl, _, _, _, _ ->
                 runCatching {
@@ -1496,13 +1544,32 @@ class SettingsActivity : AppCompatActivity() {
     private fun buildDownloadRow(record: DownloadRecord): View {
         val content = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
 
+        // 标题行：文件名 + 完成记录的「分享」按钮（单击/长按手势保持原功能不变）
+        val titleRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        titleRow.gravity = Gravity.CENTER_VERTICAL
         val title = TextView(this).apply {
             text = record.fileName.ifBlank { record.title.ifBlank { record.id } }
             maxLines = 1
             ellipsize = android.text.TextUtils.TruncateAt.END
             setTextAppearance(android.R.style.TextAppearance_Medium)
+            layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
         }
-        content.addView(title)
+        titleRow.addView(title)
+        if (record.status == DownloadStatus.DONE) {
+            val shareBtn = TextView(this).apply {
+                text = getString(R.string.download_share)
+                setTextAppearance(android.R.style.TextAppearance_Small)
+                val pad = dp(8)
+                setPadding(pad, pad, pad, pad)
+                layoutParams = LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.WRAP_CONTENT,
+                    LinearLayout.LayoutParams.WRAP_CONTENT
+                )
+            }
+            shareBtn.setOnClickListener { shareDownload(record) }
+            titleRow.addView(shareBtn)
+        }
+        content.addView(titleRow)
 
         val statusText = TextView(this).apply {
             text = describeStatus(record)
@@ -1640,7 +1707,8 @@ class SettingsActivity : AppCompatActivity() {
     /** 取消进行中的下载：直链移除系统任务（连带半成品），m3u8 通知服务在下一分片前停止 */
     private fun cancelRunningDownload(record: DownloadRecord) {
         if (record.kind == DownloadKind.DIRECT) {
-            val dmId = record.id.removePrefix("dm_").toLongOrNull() ?: return
+            // 记录 id 有 "dm_<id>"（视频直链）与 "file_dm_<id>"（普通文件）两种前缀
+            val dmId = record.id.removePrefix("file_dm_").removePrefix("dm_").toLongOrNull() ?: return
             runCatching { getSystemService(DownloadManager::class.java)?.remove(dmId) }
                 .onFailure { Log.w(logTag, "dm remove failed: ${it.message}") }
         } else {
@@ -1682,7 +1750,7 @@ class SettingsActivity : AppCompatActivity() {
 
     /** 直链下载实时进度（DownloadManager 查询；m3u8 用记录里的分片进度） */
     private fun queryDirectProgress(record: DownloadRecord): Int? {
-        val dmId = record.id.removePrefix("dm_").toLongOrNull() ?: return null
+        val dmId = record.id.removePrefix("file_dm_").removePrefix("dm_").toLongOrNull() ?: return null
         val dm = getSystemService(DownloadManager::class.java) ?: return null
         return runCatching {
             dm.query(DownloadManager.Query().setFilterById(dmId))?.use { c ->
@@ -1729,10 +1797,16 @@ class SettingsActivity : AppCompatActivity() {
             Toast.makeText(this, R.string.download_open_failed, Toast.LENGTH_LONG).show()
             return
         }
+        // 按文件真实 MIME 打开（PDF/文档/图片等），拿不到再按扩展名猜，兜底 video/*（历史视频记录）
+        val parsed = Uri.parse(uri)
+        val mime = runCatching { contentResolver.getType(parsed) }.getOrNull()
+            ?: android.webkit.MimeTypeMap.getSingleton()
+                .getMimeTypeFromExtension(record.fileName.substringAfterLast('.', "").lowercase())
+            ?: "video/*"
         runCatching {
             startActivity(
                 Intent(Intent.ACTION_VIEW).apply {
-                    setDataAndType(Uri.parse(uri), "video/*")
+                    setDataAndType(parsed, mime)
                     addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
                 }
             )
@@ -1750,6 +1824,36 @@ class SettingsActivity : AppCompatActivity() {
         queryUriByName(MediaStore.Downloads.EXTERNAL_CONTENT_URI, name)?.let { return it }
         queryUriByName(MediaStore.Video.Media.EXTERNAL_CONTENT_URI, name)?.let { return it }
         return null
+    }
+
+    /** 分享已下载文件：系统分享面板；解析不出 content uri（API28- 的 file:// 等）时提示 */
+    private fun shareDownload(record: DownloadRecord) {
+        val uri = resolveRecordUri(record)
+        if (uri == null || !uri.startsWith("content://")) {
+            Toast.makeText(this, R.string.download_open_failed, Toast.LENGTH_SHORT).show()
+            return
+        }
+        val parsed = Uri.parse(uri)
+        val mime = runCatching { contentResolver.getType(parsed) }.getOrNull()
+            ?: android.webkit.MimeTypeMap.getSingleton()
+                .getMimeTypeFromExtension(record.fileName.substringAfterLast('.', "").lowercase())
+            ?: "*/*"
+        runCatching {
+            startActivity(
+                Intent.createChooser(
+                    Intent(Intent.ACTION_SEND).apply {
+                        type = mime
+                        putExtra(Intent.EXTRA_STREAM, parsed)
+                        putExtra(Intent.EXTRA_TITLE, record.fileName)
+                        addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                    },
+                    getString(R.string.download_share_chooser)
+                )
+            )
+        }.onFailure {
+            Log.w(logTag, "share download failed: ${it.message}")
+            Toast.makeText(this, R.string.download_open_failed, Toast.LENGTH_SHORT).show()
+        }
     }
 
     private fun queryUriByName(collection: Uri, displayName: String): String? = runCatching {
@@ -1784,6 +1888,7 @@ class SettingsActivity : AppCompatActivity() {
 
     override fun onDestroy() {
         stopPlayback()
+        stopDownloadProgressPolling()
         super.onDestroy()
     }
 
