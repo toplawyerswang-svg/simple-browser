@@ -8,15 +8,22 @@ import android.graphics.Typeface
 import android.media.MediaPlayer
 import android.os.Bundle
 import android.text.Editable
+import android.text.SpannableString
 import android.text.TextWatcher
+import android.text.Spanned
+import android.text.style.BackgroundColorSpan
+import android.text.style.ForegroundColorSpan
 import android.view.Gravity
 import android.view.View
+import android.view.inputmethod.EditorInfo
+import android.view.inputmethod.InputMethodManager
 import android.widget.Button
 import android.widget.CheckBox
 import android.widget.EditText
 import android.widget.LinearLayout
 import android.widget.RadioButton
 import android.widget.RadioGroup
+import android.widget.ScrollView
 import android.widget.TextView
 import android.widget.Toast
 import androidx.appcompat.app.AlertDialog
@@ -60,6 +67,14 @@ class AsrResultActivity : AppCompatActivity() {
     private var playingKey = -1L
     private var playingView: View? = null
     private val speakerColors = intArrayOf(0xFF1565C0.toInt(), 0xFFC62828.toInt(), 0xFF2E7D32.toInt(), 0xFF6A1B9A.toInt())
+
+    // 关键词搜索：命中（段索引+区间）高亮 + 上一处/下一处跳转，与分享网页行为一致
+    private data class SearchHit(val segIdx: Int, val start: Int, val end: Int)
+    private var searchQuery: String = ""
+    private var searchHits: List<SearchHit> = emptyList()
+    private var searchIdx = -1
+    private val segBlocks = mutableListOf<LinearLayout>()
+    private val segTexts = mutableListOf<TextView>()
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -106,6 +121,28 @@ class AsrResultActivity : AppCompatActivity() {
         findViewById<Button>(R.id.asr_btn_move_folder).setOnClickListener { moveToFolder() }
         findViewById<Button>(R.id.asr_btn_share).setOnClickListener { copyOrShare(share = true) }
         findViewById<Button>(R.id.asr_btn_share_link).setOnClickListener { shareLink() }
+
+        val searchInput = findViewById<EditText>(R.id.asr_search_input)
+        searchInput.addTextChangedListener(object : TextWatcher {
+            override fun afterTextChanged(s: Editable) {
+                searchQuery = s.toString()
+                applySearch(jumpToFirst = true)
+            }
+
+            override fun beforeTextChanged(s: CharSequence?, a: Int, b: Int, c: Int) {}
+            override fun onTextChanged(s: CharSequence?, a: Int, b: Int, c: Int) {}
+        })
+        searchInput.setOnEditorActionListener { _, actionId, _ ->
+            if (actionId == EditorInfo.IME_ACTION_SEARCH) {
+                goToHit(1)
+                hideKeyboard()
+                true
+            } else {
+                false
+            }
+        }
+        findViewById<Button>(R.id.asr_search_prev).setOnClickListener { goToHit(-1) }
+        findViewById<Button>(R.id.asr_search_next).setOnClickListener { goToHit(1) }
 
         val tabs = findViewById<TabLayout>(R.id.asr_tabs)
         tabs.addTab(tabs.newTab().setText(R.string.asr_tab_result))
@@ -219,6 +256,8 @@ class AsrResultActivity : AppCompatActivity() {
     private fun render() {
         val container = findViewById<LinearLayout>(R.id.asr_container)
         container.removeAllViews()
+        segBlocks.clear()
+        segTexts.clear()
         fallbackNames.clear()
         // 颜色按说话人首次出现顺序分配：同一说话人全程同色，跨设备/分享页规则一致
         colorOrder.clear()
@@ -251,7 +290,7 @@ class AsrResultActivity : AppCompatActivity() {
                     }
                 })
             }
-            block.addView(TextView(this).apply {
+            val txt = TextView(this).apply {
                 text = seg.text
                 textSize = 15f
                 setTextColor(0xFF212121.toInt())
@@ -261,7 +300,10 @@ class AsrResultActivity : AppCompatActivity() {
                     // 与分享页一致的点段回听
                     setOnClickListener { toggleSegmentPlay(seg, this) }
                 }
-            })
+            }
+            block.addView(txt)
+            segBlocks.add(block)
+            segTexts.add(txt)
             container.addView(block)
         }
         if (activeSegments().isEmpty()) {
@@ -272,6 +314,103 @@ class AsrResultActivity : AppCompatActivity() {
                 setPadding(0, (40 * density).toInt(), 0, 0)
             })
         }
+        // 恢复当前关键词的高亮（切原文/译文后内容重建；不重置命中位置）
+        applySearch(jumpToFirst = false)
+    }
+
+    // ---------- 关键词搜索 ----------
+
+    /** 重算命中并重绘高亮；jumpToFirst=true（输入变化）跳到第一处，false（切语言重建）仅恢复高亮。 */
+    private fun applySearch(jumpToFirst: Boolean) {
+        val q = searchQuery.trim()
+        val hits = mutableListOf<SearchHit>()
+        if (q.isNotEmpty()) {
+            val lq = q.lowercase()
+            activeSegments().forEachIndexed { i, seg ->
+                val lower = seg.text.lowercase()
+                var from = 0
+                while (true) {
+                    val at = lower.indexOf(lq, from)
+                    if (at < 0) break
+                    hits.add(SearchHit(i, at, at + lq.length))
+                    from = at + lq.length
+                }
+            }
+        }
+        searchHits = hits
+        if (hits.isEmpty()) {
+            searchIdx = -1
+        } else if (jumpToFirst) {
+            searchIdx = 0
+        } else {
+            if (searchIdx >= hits.size) searchIdx = hits.size - 1
+            if (searchIdx < 0) searchIdx = 0
+        }
+        for (i in segTexts.indices) paintSegment(i)
+        updateSearchCount()
+        if (jumpToFirst && hits.isNotEmpty()) scrollToHit()
+    }
+
+    /** 给第 i 段文字上高亮：当前命中橙底白字，其余黄底（与分享网页配色一致）。 */
+    private fun paintSegment(i: Int) {
+        val tv = segTexts.getOrNull(i) ?: return
+        val text = activeSegments().getOrNull(i)?.text ?: return
+        val inSeg = searchHits.withIndex().filter { it.value.segIdx == i }
+        if (inSeg.isEmpty()) {
+            if (tv.text.toString() != text) tv.text = text
+            return
+        }
+        val span = SpannableString(text)
+        for ((globalIdx, hit) in inSeg) {
+            val cur = globalIdx == searchIdx
+            span.setSpan(
+                BackgroundColorSpan(if (cur) 0xFFF57C00.toInt() else 0xFFFFE082.toInt()),
+                hit.start, hit.end, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE
+            )
+            if (cur) {
+                span.setSpan(
+                    ForegroundColorSpan(0xFFFFFFFF.toInt()),
+                    hit.start, hit.end, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE
+                )
+            }
+        }
+        tv.text = span
+    }
+
+    private fun updateSearchCount() {
+        val tv = findViewById<TextView>(R.id.asr_search_count)
+        tv.text = when {
+            searchQuery.trim().isEmpty() -> ""
+            searchHits.isEmpty() -> getString(R.string.asr_search_no_result)
+            else -> getString(R.string.asr_search_pos, searchIdx + 1, searchHits.size)
+        }
+    }
+
+    /** 上一处/下一处（环绕）；当前在 AI 页时先切回识别结果页。 */
+    private fun goToHit(delta: Int) {
+        if (searchHits.isEmpty()) return
+        val prev = searchIdx
+        searchIdx = (searchIdx + delta + searchHits.size) % searchHits.size
+        paintSegment(searchHits[searchIdx].segIdx)
+        if (prev != searchIdx && prev in searchHits.indices) paintSegment(searchHits[prev].segIdx)
+        updateSearchCount()
+        val tabs = findViewById<TabLayout>(R.id.asr_tabs)
+        if (tabs.selectedTabPosition == 1) tabs.getTabAt(0)?.select()
+        scrollToHit()
+    }
+
+    private fun scrollToHit() {
+        if (searchIdx !in searchHits.indices) return
+        val block = segBlocks.getOrNull(searchHits[searchIdx].segIdx) ?: return
+        val scroll = findViewById<ScrollView>(R.id.page_result)
+        scroll.post { scroll.smoothScrollTo(0, block.top) }
+    }
+
+    private fun hideKeyboard() {
+        val imm = getSystemService(Context.INPUT_METHOD_SERVICE) as InputMethodManager
+        val token = currentFocus?.windowToken
+            ?: findViewById<EditText>(R.id.asr_search_input).windowToken
+        if (token != null) imm.hideSoftInputFromWindow(token, 0)
     }
 
     /** 标注说话人：输入名字（可从声纹库已有人名快捷选择），确认后并入声纹库。 */

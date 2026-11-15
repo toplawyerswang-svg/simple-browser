@@ -1260,6 +1260,133 @@ def list_voiceprints():
 
 # ---------------------------------------------------------------- 分享页
 
+# 详情页关键词搜索（转写分享页/资料夹转写条目页/聊天记录分享页共用）：
+# 输入即搜（防抖），命中词高亮、「上一处/下一处」跳转滚动并显示 n/m 计数；
+# 聊天页命中折叠的图片 OCR 解析块时自动展开；原文/普通话切换后经 window.__lzRe 重高亮。
+SEARCH_BAR_HTML = ('<div class="sbar">'
+                   '<input id="q" type="search" placeholder="搜索关键词" enterkeyhint="search">'
+                   '<button id="qprev" type="button" aria-label="上一处">&#8593;</button>'
+                   '<button id="qnext" type="button" aria-label="下一处">&#8595;</button>'
+                   '<span class="sq" id="qcount"></span></div>')
+
+SEARCH_CSS = """
+.sbar{position:sticky;top:0;z-index:6;display:flex;gap:6px;align-items:center;background:#fff;border:1px solid #e2e0d8;border-radius:8px;padding:6px 8px;margin:2px 0 12px;box-shadow:0 1px 3px rgba(0,0,0,.05)}
+.sbar input{flex:1;min-width:0;border:none;outline:none;font-size:14px;background:transparent;padding:4px 2px;color:#212121}
+.sbar input::-webkit-search-cancel-button{-webkit-appearance:none}
+.sbar button{flex:none;font-size:14px;line-height:1;padding:8px 12px;border:1px solid #d0cec6;background:#fafaf7;border-radius:6px;color:#333;cursor:pointer;margin:0;min-width:38px}
+.sbar button:active{background:#ecebe6}
+.sbar .sq{flex:none;min-width:42px;text-align:center;font-size:12px;color:#8a8a8a;white-space:nowrap}
+mark.lzhit{background:#ffe082;color:inherit;padding:0;border-radius:2px}
+mark.lzhit.cur{background:#f57c00;color:#fff}
+"""
+
+SEARCH_JS = r"""
+function lzSearchBar(rootId){
+  var root=document.getElementById(rootId);
+  var input=document.getElementById('q');
+  if(!root||!input)return;
+  var btnPrev=document.getElementById('qprev');
+  var btnNext=document.getElementById('qnext');
+  var cnt=document.getElementById('qcount');
+  var marks=[],cur=-1,q='',timer=null;
+  function clearMarks(){
+    var ms=root.querySelectorAll('mark.lzhit');
+    for(var i=0;i<ms.length;i++){
+      var p=ms[i].parentNode;if(!p)continue;
+      p.replaceChild(document.createTextNode(ms[i].textContent),ms[i]);
+      p.normalize();
+    }
+    marks=[];
+  }
+  function apply(){
+    clearMarks();
+    if(!q)return;
+    var lq=q.toLowerCase();
+    var walker=document.createTreeWalker(root,NodeFilter.SHOW_TEXT,null);
+    var nodes=[];
+    while(walker.nextNode()){
+      var n=walker.currentNode;
+      if(n.nodeValue&&n.nodeValue.toLowerCase().indexOf(lq)>=0)nodes.push(n);
+    }
+    for(var i=0;i<nodes.length;i++){
+      var n=nodes[i];var v=n.nodeValue,lv=v.toLowerCase();
+      var f=document.createDocumentFragment();var pos=0,ix;
+      while((ix=lv.indexOf(lq,pos))>=0){
+        if(ix>pos)f.appendChild(document.createTextNode(v.substring(pos,ix)));
+        var m=document.createElement('mark');m.className='lzhit';
+        m.textContent=v.substring(ix,ix+q.length);
+        f.appendChild(m);pos=ix+q.length;
+      }
+      if(pos<v.length)f.appendChild(document.createTextNode(v.substring(pos)));
+      n.parentNode.replaceChild(f,n);
+    }
+    marks=root.querySelectorAll('mark.lzhit');
+  }
+  function paint(){
+    for(var i=0;i<marks.length;i++)marks[i].className='lzhit';
+    if(cur>=0&&cur<marks.length)marks[cur].className='lzhit cur';
+  }
+  function count(){
+    if(!q){cnt.textContent='';return;}
+    cnt.textContent=marks.length?((cur+1)+'/'+marks.length):'无结果';
+  }
+  function expandOcr(m){
+    if(!m.closest)return;
+    var o=m.closest('.ocr');
+    if(o&&o.style.display==='none'){
+      o.style.display='block';
+      var b=o.parentNode.querySelector('.ocrbtn');
+      if(b)b.textContent='收起解析结果';
+    }
+  }
+  function show(i,scroll){
+    cur=i;paint();
+    if(i>=0){
+      var m=marks[i];expandOcr(m);
+      if(scroll!==false){
+        try{m.scrollIntoView({block:'center',behavior:'smooth'});}
+        catch(e){try{m.scrollIntoView(true);}catch(e2){}}
+      }
+    }
+    count();
+  }
+  function go(d){
+    if(!marks.length)return;
+    show((cur+d+marks.length)%marks.length);
+  }
+  function reapply(){
+    apply();
+    if(!marks.length){cur=-1;}
+    else{if(cur>=marks.length)cur=marks.length-1;if(cur<0)cur=0;}
+    paint();count();
+  }
+  input.addEventListener('input',function(){
+    if(timer)clearTimeout(timer);
+    timer=setTimeout(function(){
+      timer=null;
+      q=input.value.replace(/^\s+|\s+$/g,'');
+      apply();
+      if(q&&marks.length)show(0);
+      else{cur=-1;count();}
+    },220);
+  });
+  input.addEventListener('keydown',function(e){
+    if(e.key==='Enter'){e.preventDefault();go(1);}
+  });
+  btnPrev.addEventListener('click',function(){go(-1);});
+  btnNext.addEventListener('click',function(){go(1);});
+  window.__lzRe=reapply;
+}
+"""
+
+
+def search_assets(container_id):
+    """详情页尾部统一追加的搜索样式+脚本；container_id 为内容渲染容器元素 id。"""
+    return ('<style>' + SEARCH_CSS + '</style>'
+            '<script>' + SEARCH_JS + '</script>'
+            '<script>lzSearchBar(' + json.dumps(container_id) + ');</script>')
+
+
 PAGE_CSS = """
 body{margin:0;background:#f7f6f1;font-family:-apple-system,'PingFang SC','Microsoft YaHei',sans-serif;color:#212121}
 .wrap{max-width:720px;margin:0 auto;padding:20px 16px 40px}
@@ -1408,6 +1535,7 @@ def share_page(sid):
             "<button id=\"tg\" style=\"display:%s\">查看原文</button>"
             "<button onclick=\"copyAll()\">复制全文</button>"
             "%s"
+            "%s"
             "<div id=\"content\"></div>"
             "</div>"
             "%s"
@@ -1449,7 +1577,7 @@ def share_page(sid):
             "h+='<div class=\"seg\"'+(CAN_PLAY?' onclick=\"segClick(this)\"':'')+' data-a=\"'+s.begin_ms+'\" data-b=\"'+s.end_ms+'\">'+(lab.length?'<div class=\"label\">'+lab.join('   ')+'</div>':'')+'<div class=\"txt\">'+esc(s.text)+'</div></div>';}"
             "document.getElementById('content').innerHTML=h;"
             "document.getElementById('tg').textContent=mand?'查看原文':'查看普通话译文';"
-            "window.__cur=arr;}"
+            "window.__cur=arr;if(window.__lzRe)window.__lzRe();}"
             "function copyAll(){var arr=window.__cur||ORIG;var t='';"
             "for(var i=0;i<arr.length;i++){var s=arr[i];var sl=spkLabel(s.speaker);"
             "t+=(sl?'['+sl+']':'')+(HAS_TS?'['+s.begin+'-'+s.end+']':'')+s.text+'\\n';}"
@@ -1476,6 +1604,7 @@ def share_page(sid):
             % (html.escape(sh.get("filename") or "转写结果"), html.escape(meta_html),
                ai_tab,
                "inline-block" if has_mand else "none",
+               SEARCH_BAR_HTML,
                ('<div id="audstat" class="meta" style="margin-bottom:12px">'
                 '点击任意段落可回听对应原音</div>') if allow_play else "",
                ai_page,
@@ -1484,6 +1613,7 @@ def share_page(sid):
                1 if opts.get("timestamps") else 0, 1 if opts.get("diarize") else 0,
                1 if allow_play else 0, 1 if show_names else 0,
                summary_js, todos_js))
+    body += search_assets("content")
     return render_page(sh.get("filename") or "转写结果", meta_html, body)
 
 
@@ -3108,16 +3238,19 @@ def wxchat_share_page(sh, sid):
             '<button onclick="copyAll()">复制全文</button>'
             '<a href="/s/%s/chat.json?pwd=%s">Agent 数据（JSON）</a>'
             '<button id="lzMoveBtn" onclick="moveToFolder()" style="display:none">移入资料夹</button>'
-            '</div><div class="chat" id="chat"></div>%s'
+            '</div>%s'
+            '<div class="chat" id="chat"></div>%s'
             '<div id="toast"></div>'
             '<style>%s</style>'
             '<script>var CHAT=%s;var OCR=%s;var RNAMES=%s;var SELF_NICK=%s;var SID="%s";var PWD=%s;var NMEDIA=%s;</script>'
-            '<script>%s</script></body></html>'
+            '<script>%s</script>%s</body></html>'
             % (html.escape(chat["title"]), html.escape(meta), sid, sh["pwd"],
+               SEARCH_BAR_HTML,
                others_html, CHAT_PAGE_CSS, chat_js, ocr_js,
                json.dumps(display, ensure_ascii=False).replace("</", "<\\/"),
                json.dumps(self_nick), sid,
-               json.dumps(str(sh["pwd"])), nested_media_js, CHAT_RENDER_JS))
+               json.dumps(str(sh["pwd"])), nested_media_js, CHAT_RENDER_JS,
+               search_assets("chat")))
     return ("<!doctype html><html lang=\"zh\"><head><meta charset=\"utf-8\">"
             "<meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">"
             "<title>%s</title></head><body>%s"
@@ -3329,6 +3462,7 @@ def folder_item_task_page(sh, sid, idx, item):
             "<button id=\"tg\" style=\"display:%s\">查看原文</button>"
             "<button onclick=\"copyAll()\">复制全文</button>"
             "%s"
+            "%s"
             "<div id=\"content\"></div>"
             "</div>"
             "%s"
@@ -3370,7 +3504,7 @@ def folder_item_task_page(sh, sid, idx, item):
             "h+='<div class=\"seg\"'+(CAN_PLAY?' onclick=\"segClick(this)\"':'')+' data-a=\"'+s.begin_ms+'\" data-b=\"'+s.end_ms+'\">'+(lab.length?'<div class=\"label\">'+lab.join('   ')+'</div>':'')+'<div class=\"txt\">'+esc(s.text)+'</div></div>';}"
             "document.getElementById('content').innerHTML=h;"
             "document.getElementById('tg').textContent=mand?'查看原文':'查看普通话译文';"
-            "window.__cur=arr;}"
+            "window.__cur=arr;if(window.__lzRe)window.__lzRe();}"
             "function copyAll(){var arr=window.__cur||ORIG;var t='';"
             "for(var i=0;i<arr.length;i++){var s=arr[i];var sl=spkLabel(s.speaker);"
             "t+=(sl?'['+sl+']':'')+(HAS_TS?'['+s.begin+'-'+s.end+']':'')+s.text+'\\n';}"
@@ -3398,6 +3532,7 @@ def folder_item_task_page(sh, sid, idx, item):
                html.escape(title), html.escape(meta_html),
                ai_tab,
                "inline-block" if has_mand else "none",
+               SEARCH_BAR_HTML,
                ('<div id="audstat" class="meta" style="margin-bottom:12px">'
                 '点击任意段落可回听对应原音</div>') if allow_play else "",
                ai_page,
@@ -3406,6 +3541,7 @@ def folder_item_task_page(sh, sid, idx, item):
                1 if opts.get("timestamps") else 0, 1 if opts.get("diarize") else 0,
                1 if allow_play else 0, 1 if show_names else 0,
                summary_js, todos_js))
+    body += search_assets("content")
     return render_page(title, meta_html, body)
 
 
