@@ -125,6 +125,92 @@
             android:textSize="14sp"
             android:textColor="#8A8A8A"
             android:lineSpacingExtra="4dp" />
+
+        <!-- 多选模式：底部批量操作条（仅详情态多选时显示） -->
+        <LinearLayout
+            android:id="@+id/select_bottom_bar"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal"
+            android:background="#FFFFFF"
+            android:gravity="center_vertical"
+            android:paddingStart="12dp"
+            android:paddingEnd="12dp"
+            android:paddingTop="8dp"
+            android:paddingBottom="8dp"
+            android:visibility="gone">
+
+            <TextView
+                android:id="@+id/btn_select_remove"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:gravity="center"
+                android:text="@string/folder_select_remove"
+                android:textSize="14sp"
+                android:textColor="#D32F2F"
+                android:padding="10dp" />
+
+            <TextView
+                android:id="@+id/btn_select_move"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:gravity="center"
+                android:text="@string/folder_select_move"
+                android:textSize="14sp"
+                android:textColor="#1565C0"
+                android:padding="10dp" />
+
+            <TextView
+                android:id="@+id/btn_select_copy"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:gravity="center"
+                android:text="@string/folder_select_copy"
+                android:textSize="14sp"
+                android:textColor="#1565C0"
+                android:padding="10dp" />
+        </LinearLayout>
+
+        <!-- 多选模式：顶部全选/反选条（标题左侧显示「已选 n/m」，tv_title 文案切换） -->
+        <LinearLayout
+            android:id="@+id/select_top_bar"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal"
+            android:background="#FFFFFF"
+            android:gravity="end|center_vertical"
+            android:paddingStart="12dp"
+            android:paddingEnd="16dp"
+            android:paddingTop="6dp"
+            android:paddingBottom="6dp"
+            android:visibility="gone">
+
+            <TextView
+                android:id="@+id/btn_select_all"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:minWidth="44dp"
+                android:minHeight="36dp"
+                android:gravity="center"
+                android:text="@string/folder_select_all"
+                android:textSize="14sp"
+                android:textColor="#1565C0" />
+
+            <TextView
+                android:id="@+id/btn_select_invert"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:minWidth="44dp"
+                android:minHeight="36dp"
+                android:gravity="center"
+                android:text="@string/folder_select_invert"
+                android:textSize="14sp"
+                android:textColor="#1565C0"
+                android:layout_marginStart="12dp" />
+        </LinearLayout>
     </LinearLayout>
 
     <!-- 条目页内预览：全屏 WebView，返回键关闭回到文件夹 -->

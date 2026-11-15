@@ -10,19 +10,23 @@ import androidx.appcompat.app.AppCompatActivity
  *  onDone 在成功移入后回调（调用方借此刷新列表/退出多选），回调发生在 UI 线程。 */
 object FolderAddFlow {
 
-    /** 单条移入：列出已有文件夹 +「＋新建」项，选中即移入。 */
+    /** 单条移入：列出已有文件夹 +「＋新建」项，选中即移入。
+     *  copy=false 移动语义（默认），copy=true 复制语义（保留其他夹归属）。 */
     fun moveSingle(activity: AppCompatActivity, kind: String, ref: String, title: String,
-                   onDone: () -> Unit = {}) {
+                   copy: Boolean = false, onDone: () -> Unit = {}) {
         moveBatch(activity, listOf(kind to ref),
-            dialogTitle = activity.getString(R.string.folder_add_to, title), onDone = onDone)
+            dialogTitle = activity.getString(R.string.folder_add_to, title),
+            copy = copy, onDone = onDone)
     }
 
-    /** 批量移入：payload 为 (kind, ref) 列表，服务端逐条 move。
+    /** 批量移入：payload 为 (kind, ref) 列表；copy=false 服务端逐条 move（一条记录只归属
+     *  一个夹），copy=true 复制语义（保留其他夹归属，一条记录可同时在多个夹）。
      *  onSettle 只触发一次且无论取消/失败/成功都会走到（收尾用，如转存流程弹结果），
-     *  与 onDone（仅移入成功后刷新调用方）互补；均在 UI 线程回调。 */
+     *  与 onDone（仅移入成功后刷新调用方）互补；均在 UI 线程回调。
+     *  注意 onDone 保持在参数末位——既有调用方用尾随 lambda 传它。 */
     fun moveBatch(activity: AppCompatActivity, payload: List<Pair<String, String>>,
-                  dialogTitle: String? = null, onDone: () -> Unit = {},
-                  onSettle: (() -> Unit)? = null) {
+                  dialogTitle: String? = null, onSettle: (() -> Unit)? = null,
+                  copy: Boolean = false, onDone: () -> Unit = {}) {
         var settled = false
         fun settle() {
             if (!settled) {
@@ -39,13 +43,14 @@ object FolderAddFlow {
                     list.forEach { options.add(it.name) }
                     AlertDialog.Builder(activity)
                         .setTitle(dialogTitle
-                            ?: activity.getString(R.string.folder_move_selected, payload.size))
+                            ?: activity.getString(if (copy) R.string.folder_copy_selected
+                                                 else R.string.folder_move_selected, payload.size))
                         .setItems(options.toTypedArray()) { _, which ->
                             if (which == 0) {
-                                promptNewAndMove(activity, payload, onDone, ::settle)
+                                promptNewAndMove(activity, payload, onDone, ::settle, copy)
                             } else {
                                 val f = list[which - 1]
-                                addBatch(activity, f.folderId, f.name, payload, onDone, ::settle)
+                                addBatch(activity, f.folderId, f.name, payload, onDone, ::settle, copy)
                             }
                         }
                         .setNegativeButton(android.R.string.cancel) { _, _ -> settle() }
@@ -61,7 +66,7 @@ object FolderAddFlow {
     /** 新建文件夹后立即移入。 */
     private fun promptNewAndMove(activity: AppCompatActivity,
                                  payload: List<Pair<String, String>>, onDone: () -> Unit,
-                                 settle: () -> Unit) {
+                                 settle: () -> Unit, copy: Boolean = false) {
         val input = EditText(activity).apply {
             hint = activity.getString(R.string.folder_name_hint)
             setSingleLine(true)
@@ -78,7 +83,7 @@ object FolderAddFlow {
                         val fid = AsrClient.createFolder(activity, name)
                         activity.runOnUiThread {
                             if (dead(activity)) return@runOnUiThread
-                            addBatch(activity, fid, name, payload, onDone, settle)
+                            addBatch(activity, fid, name, payload, onDone, settle, copy)
                         }
                     } catch (e: Exception) {
                         showError(activity, e)
@@ -92,13 +97,16 @@ object FolderAddFlow {
     /** 统一走批量接口移入（单条即 1 项批量）：一次请求拿到新增/跳过/失败计数，提示口径一致。 */
     private fun addBatch(activity: AppCompatActivity, folderId: String, folderName: String,
                          payload: List<Pair<String, String>>, onDone: () -> Unit,
-                         settle: () -> Unit) {
+                         settle: () -> Unit, copy: Boolean = false) {
         Thread {
             try {
-                val (added, skipped, failed) = AsrClient.folderAddItems(activity, folderId, payload)
+                val (added, skipped, failed) =
+                    AsrClient.folderAddItems(activity, folderId, payload, copy)
                 activity.runOnUiThread {
                     if (dead(activity)) return@runOnUiThread
-                    var msg = activity.getString(R.string.folder_batch_added, folderName, added)
+                    var msg = activity.getString(
+                        if (copy) R.string.folder_batch_copied else R.string.folder_batch_added,
+                        folderName, added)
                     if (skipped > 0) msg += activity.getString(R.string.folder_batch_skipped, skipped)
                     if (failed > 0) msg += activity.getString(R.string.folder_batch_failed, failed)
                     Toast.makeText(activity, msg, Toast.LENGTH_LONG).show()

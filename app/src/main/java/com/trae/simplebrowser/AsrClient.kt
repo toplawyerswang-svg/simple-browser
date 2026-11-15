@@ -584,8 +584,8 @@ object AsrClient {
 
     /** 批量加入文件夹（列表多选移入 / 单条移入 / 文件夹内挑选添加共用）。
      *  items 为 (kind, ref) 列表；返回 (added, skipped, failed) 三元组，failed 为失败条数。 */
-    fun folderAddItems(context: Context, folderId: String, items: List<Pair<String, String>>):
-            Triple<Int, Int, Int> {
+    fun folderAddItems(context: Context, folderId: String, items: List<Pair<String, String>>,
+                       copy: Boolean = false): Triple<Int, Int, Int> {
         val conn = (URL("$BASE_URL/folders/$folderId/items/batch").openConnection() as HttpURLConnection).apply {
             requestMethod = "POST"
             connectTimeout = 15000
@@ -598,8 +598,10 @@ object AsrClient {
         items.forEach { (kind, ref) ->
             arr.put(JSONObject().put("kind", kind).put("ref", ref))
         }
+        val payloadJson = JSONObject().put("items", arr)
+        if (copy) payloadJson.put("copy", true)   // 复制语义：保留其他夹归属（一条记录可同时在多个夹）
         conn.outputStream.use {
-            it.write(JSONObject().put("items", arr).toString().toByteArray(Charsets.UTF_8))
+            it.write(payloadJson.toString().toByteArray(Charsets.UTF_8))
         }
         val code = conn.responseCode
         val body = readBody(conn, code)

@@ -39,6 +39,10 @@ class FolderActivity : AppCompatActivity() {
     private var detail: AsrClient.FolderDetail? = null
     private val adapter = FolderAdapter()
 
+    // 详情态多选模式：selected 存 "kind:ref"（失效条目不可选）；BACK 先退多选
+    private var selectMode = false
+    private val selected = LinkedHashSet<String>()
+
     // 列表态关键词搜索（按文件夹名过滤，本地实时）
     private var folderQuery = ""
 
@@ -63,19 +67,28 @@ class FolderActivity : AppCompatActivity() {
         }
         binding.btnShare.setOnClickListener { promptShareOptions() }
         binding.btnMore.setOnClickListener { showDetailMenu() }
+        binding.btnSelectAll.setOnClickListener { selectAllAlive(true) }
+        binding.btnSelectInvert.setOnClickListener { invertAlive() }
+        binding.btnSelectMove.setOnClickListener { batchMoveOrCopy(copy = false) }
+        binding.btnSelectCopy.setOnClickListener { batchMoveOrCopy(copy = true) }
+        binding.btnSelectRemove.setOnClickListener { batchRemoveSelected() }
         binding.folderList.adapter = adapter
         binding.folderList.setOnItemClickListener { _, _, pos, _ ->
             if (detail == null) {
                 folderFiltered().getOrNull(pos)?.let(::openFolder)
             } else {
-                detail?.entries?.getOrNull(pos)?.let(::openEntry)
+                val e = detail?.entries?.getOrNull(pos) ?: return@setOnItemClickListener
+                if (selectMode) toggleSelect(e) else openEntry(e)
             }
         }
         binding.folderList.setOnItemLongClickListener { _, _, pos, _ ->
             if (detail == null) {
                 folderFiltered().getOrNull(pos)?.let(::showFolderMenu)
             } else {
-                detail?.entries?.getOrNull(pos)?.let(::confirmRemoveEntry)
+                val e = detail?.entries?.getOrNull(pos)
+                if (e != null) {
+                    if (!selectMode) enterSelectMode(e) else toggleSelect(e)
+                }
             }
             true
         }
@@ -96,6 +109,10 @@ class FolderActivity : AppCompatActivity() {
     override fun onBackPressed() {
         if (previewVisible()) {
             closePreview()
+            return
+        }
+        if (selectMode) {
+            exitSelectMode()
             return
         }
         if (detail != null) {
@@ -144,7 +161,12 @@ class FolderActivity : AppCompatActivity() {
                 runOnUiThread {
                     if (isFinishing || isDestroyed) return@runOnUiThread
                     detail = fresh
-                    binding.tvTitle.text = fresh.name
+                    if (selectMode) {
+                        // 刷新后夹内条目可能已变：清掉已不在本夹/已失效的选择，标题回计数
+                        val keys = fresh.entries.filter { it.alive }.map { entryKey(it) }.toSet()
+                        selected.retainAll(keys)
+                    }
+                    applyChrome()
                     adapter.notifyDataSetChanged()
                     val empty = fresh.entries.isEmpty()
                     binding.folderList.visibility = if (empty) View.GONE else View.VISIBLE
@@ -167,6 +189,18 @@ class FolderActivity : AppCompatActivity() {
             binding.btnMore.visibility = View.GONE
             binding.folderSearchInput.visibility = View.VISIBLE
             binding.folderEmptyHint.text = getString(R.string.folder_list_empty)
+            binding.selectTopBar.visibility = View.GONE
+            binding.selectBottomBar.visibility = View.GONE
+        } else if (selectMode) {
+            // 多选态：标题换计数，隐藏右上动作，露出 全选/反选 与底部批量条
+            val alive = d.entries.count { it.alive }
+            binding.tvTitle.text = getString(R.string.folder_select_title, selected.size, alive)
+            binding.btnNew.visibility = View.GONE
+            binding.btnShare.visibility = View.GONE
+            binding.btnMore.visibility = View.GONE
+            binding.folderSearchInput.visibility = View.GONE
+            binding.selectTopBar.visibility = View.VISIBLE
+            binding.selectBottomBar.visibility = View.VISIBLE
         } else {
             binding.tvTitle.text = d.name
             // 详情态：在夹内向里添加外面的录音/聊天记录（多选）
@@ -175,6 +209,8 @@ class FolderActivity : AppCompatActivity() {
             binding.btnShare.visibility = View.VISIBLE
             binding.btnMore.visibility = View.VISIBLE
             binding.folderSearchInput.visibility = View.GONE
+            binding.selectTopBar.visibility = View.GONE
+            binding.selectBottomBar.visibility = View.GONE
         }
     }
 
@@ -184,6 +220,7 @@ class FolderActivity : AppCompatActivity() {
     }
 
     private fun exitDetail() {
+        exitSelectMode()
         detail = null
         loadList()
     }
@@ -225,8 +262,128 @@ class FolderActivity : AppCompatActivity() {
                 meta.text = e.error ?: getString(R.string.folder_item_dead)
                 meta.setTextColor(0xFFD32F2F.toInt())
             }
+            // 多选模式露出勾选框；失效条目不可选（置灰）。CheckBox 自身不接管点击，
+            // 点击一律走行监听，勾选状态由 adapter 统一重绘
+            val check = v.findViewById<CheckBox>(R.id.entry_check)
+            check.visibility = if (selectMode) View.VISIBLE else View.GONE
+            check.isClickable = false
+            check.isFocusable = false
+            check.isEnabled = e.alive
+            check.isChecked = e.alive && entryKey(e) in selected
             return v
         }
+    }
+
+    // ---------- 详情态多选：全选/反选 + 批量 移出本夹/移动到/复制到 ----------
+
+    private fun entryKey(e: AsrClient.FolderEntry) = "${e.kind}:${e.ref}"
+
+    /** 长按条目进入多选（该条预选）。 */
+    private fun enterSelectMode(e: AsrClient.FolderEntry) {
+        selectMode = true
+        selected.clear()
+        if (e.alive) selected.add(entryKey(e))
+        applyChrome()
+        adapter.notifyDataSetChanged()
+    }
+
+    private fun exitSelectMode() {
+        if (!selectMode) return
+        selectMode = false
+        selected.clear()
+        applyChrome()
+        adapter.notifyDataSetChanged()
+    }
+
+    private fun toggleSelect(e: AsrClient.FolderEntry) {
+        if (!e.alive) return  // 失效条目（记录已过期/删除）无处可去，不可选
+        val k = entryKey(e)
+        if (!selected.add(k)) selected.remove(k)
+        applyChrome()
+        adapter.notifyDataSetChanged()
+    }
+
+    private fun selectAllAlive(checkAll: Boolean) {
+        val d = detail ?: return
+        if (checkAll) {
+            d.entries.filter { it.alive }.forEach { selected.add(entryKey(it)) }
+        } else {
+            selected.clear()
+        }
+        applyChrome()
+        adapter.notifyDataSetChanged()
+    }
+
+    /** 反选：只翻有效条目，失效条目保持不选。 */
+    private fun invertAlive() {
+        val d = detail ?: return
+        d.entries.filter { it.alive }.forEach {
+            val k = entryKey(it)
+            if (!selected.add(k)) selected.remove(k)
+        }
+        applyChrome()
+        adapter.notifyDataSetChanged()
+    }
+
+    private fun selectedPayload(): List<Pair<String, String>> =
+        (detail?.entries ?: emptyList())
+            .filter { it.alive && entryKey(it) in selected }
+            .map { it.kind to it.ref }
+
+    /** 批量移动/复制到其他文件夹：目标选择复用 FolderAddFlow（含＋新建文件夹）。
+     *  无论移入/取消/失败都退出多选并刷新——移动会改变本夹内容，刷新保一致。 */
+    private fun batchMoveOrCopy(copy: Boolean) {
+        val payload = selectedPayload()
+        if (payload.isEmpty()) {
+            toast(R.string.folder_select_empty)
+            return
+        }
+        FolderAddFlow.moveBatch(this, payload,
+            dialogTitle = getString(
+                if (copy) R.string.folder_copy_selected else R.string.folder_move_selected,
+                payload.size),
+            copy = copy,
+            onSettle = {
+                exitSelectMode()
+                loadDetail()
+            })
+    }
+
+    /** 批量移出本夹（逐条调 remove 接口；记录本体不受影响）。 */
+    private fun batchRemoveSelected() {
+        val fid = detail?.folderId ?: return
+        val payload = selectedPayload()
+        if (payload.isEmpty()) {
+            toast(R.string.folder_select_empty)
+            return
+        }
+        AlertDialog.Builder(this)
+            .setTitle(R.string.folder_remove_title)
+            .setMessage(getString(R.string.folder_batch_remove_confirm, payload.size))
+            .setNegativeButton(android.R.string.cancel, null)
+            .setPositiveButton(android.R.string.ok) { _, _ ->
+                Thread {
+                    var removed = 0
+                    var failed = 0
+                    for ((kind, ref) in payload) {
+                        try {
+                            AsrClient.folderRemoveItem(this, fid, kind, ref)
+                            removed++
+                        } catch (e: Exception) {
+                            failed++
+                        }
+                    }
+                    runOnUiThread {
+                        if (isFinishing || isDestroyed) return@runOnUiThread
+                        var msg = getString(R.string.folder_batch_removed, removed)
+                        if (failed > 0) msg += getString(R.string.folder_batch_failed, failed)
+                        Toast.makeText(this, msg, Toast.LENGTH_LONG).show()
+                        exitSelectMode()
+                        loadDetail()
+                    }
+                }.start()
+            }
+            .show()
     }
 
     // ---------- 文件夹内添加：挑外面的录音/聊天记录（多选） ----------
@@ -426,29 +583,6 @@ class FolderActivity : AppCompatActivity() {
                 uiError(e)
             }
         }.start()
-    }
-
-    private fun confirmRemoveEntry(e: AsrClient.FolderEntry) {
-        val fid = detail?.folderId ?: return
-        AlertDialog.Builder(this)
-            .setTitle(R.string.folder_remove_title)
-            .setMessage(getString(R.string.folder_remove_confirm, e.title))
-            .setNegativeButton(android.R.string.cancel, null)
-            .setPositiveButton(android.R.string.ok) { _, _ ->
-                Thread {
-                    try {
-                        AsrClient.folderRemoveItem(this, fid, e.kind, e.ref)
-                        runOnUiThread {
-                            if (isFinishing || isDestroyed) return@runOnUiThread
-                            toast(R.string.folder_removed)
-                            loadDetail()
-                        }
-                    } catch (err: Exception) {
-                        uiError(err)
-                    }
-                }.start()
-            }
-            .show()
     }
 
     // ---------- 新建 / 重命名 / 删除文件夹

@@ -1679,7 +1679,8 @@ def _wx_classify(text):
 
 
 def _wx_parse_chat_text(text):
-    """逐行扫描：·行开新消息，下一行须是时间（一并消费），其余行进内容。"""
+    """逐行扫描：·行开新消息（容忍缩进），下一行是时间则一并消费（旧格式），
+    不是时间则不消费直接开块（新格式：聊天记录卡片再转发导出无时间行、全篇缩进）。"""
     lines = text.replace("\r\n", "\n").split("\n")
     msgs = []
     cur = None
@@ -1700,16 +1701,18 @@ def _wx_parse_chat_text(text):
 
     i = 0
     while i < len(lines):
-        line = lines[i]
-        if line.startswith("·") and i + 1 < len(lines):
-            t, last_date = _wx_parse_time(lines[i + 1], last_date)
-            if t is not None:
-                flush()
-                cur = {"sender": line[1:].strip(), "time": t, "lines": []}
-                i += 2
-                continue
+        sline = lines[i].strip()
+        if sline.startswith("·") and len(sline) > 1:
+            # 时间行可选：旧格式「·发送者/时间」成对出现则一并消费；新格式无时间行直接开块
+            t = None
+            if i + 1 < len(lines):
+                t, last_date = _wx_parse_time(lines[i + 1], last_date)
+            flush()
+            cur = {"sender": sline[1:].strip(), "time": t if t else "", "lines": []}
+            i += 2 if t is not None else 1
+            continue
         if cur is not None:
-            cur["lines"].append(line)
+            cur["lines"].append(lines[i])
         i += 1
     flush()
     return msgs
@@ -1808,7 +1811,7 @@ def wxchat_parse_zip(zip_path, title):
         att_index = {}
         used = set()
         for m in messages:
-            if m.get("type") == "file" and m.get("file_name") in by_name:
+            if m.get("type") in ("file", "image", "video") and m.get("file_name") in by_name:
                 base = m["file_name"]
                 if base not in att_index:
                     att_index[base] = len(attachments)
@@ -1831,20 +1834,20 @@ def wxchat_parse_zip(zip_path, title):
             "messages": messages,
             "attachments": attachments,
         }
-        # [图片]/[视频] 消息与媒体目录中未被引用的图片/视频按顺序配对
-        # （微信导出按消息顺序生成 img_N 等序号文件名，txt 中不写文件名）
+        # [图片]/[视频] 消息与媒体目录中未被引用的图片/视频配对：有文件名的按名配（新格式
+        # 微信图片_日期_N.pic），无文件名的按顺序配（旧格式 img_N 序号名，txt 中不写文件名）
         img_files = sorted((b for b, i in media
                             if b not in used and PurePosixPath(b).suffix.lower() in _IMG_EXT),
                            key=_natural_key)
         vid_files = sorted((b for b, i in media
                             if b not in used and PurePosixPath(b).suffix.lower() in _VIDEO_EXT),
                            key=_natural_key)
-        for m, base in zip((m for m in messages if m.get("type") == "image"), img_files):
+        for m, base in zip((m for m in messages if m.get("type") == "image" and "att" not in m), img_files):
             used.add(base)
             m["att"] = len(attachments)
             m["size"] = by_name[base].file_size
             attachments.append({"name": base, "size": by_name[base].file_size})
-        for m, base in zip((m for m in messages if m.get("type") == "video"), vid_files):
+        for m, base in zip((m for m in messages if m.get("type") == "video" and "att" not in m), vid_files):
             used.add(base)
             m["att"] = len(attachments)
             m["size"] = by_name[base].file_size
@@ -1853,7 +1856,7 @@ def wxchat_parse_zip(zip_path, title):
         return chat, others
 
 
-_IMG_EXT = {".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp"}
+_IMG_EXT = {".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp", ".pic"}
 _VIDEO_EXT = {".mp4", ".mov", ".mkv", ".avi", ".webm", ".m4v"}
 
 
@@ -2367,6 +2370,23 @@ def upload_wxchat():
         tmp.unlink(missing_ok=True)
         return jsonify(error="不是有效的 zip 文件"), 400
     except ValueError as e:
+        # 取证（判定点落盘）：解析失败包保留最近2份，txt 头部行打日志（repr 原样含 CR），用真实数据裁决格式
+        try:
+            with zipfile.ZipFile(tmp) as zf:
+                for info in zf.infolist():
+                    if info.is_dir() or not info.filename.lower().endswith(".txt"):
+                        continue
+                    raw = zf.read(info)
+                    head = raw.decode("utf-8", errors="replace").split(chr(10))[:40]
+                    print("wxchat FAIL forensics: txt=%s bytes=%d" % (zip_entry_name(info), len(raw)), flush=True)
+                    for ln in head:
+                        print("wxchat TXT|", repr(ln), flush=True)
+            dump = DATA / ("wxchat_fail_%s.zip" % time.strftime("%Y%m%d_%H%M%S"))
+            shutil.copyfile(tmp, dump)
+            for old_dump in sorted(DATA.glob("wxchat_fail_*.zip"))[:-2]:
+                old_dump.unlink(missing_ok=True)
+        except Exception:
+            pass
         tmp.unlink(missing_ok=True)
         shutil.rmtree(DATA / (sid + ".wxfiles"), ignore_errors=True)
         return jsonify(error=str(e)), 400
@@ -2653,7 +2673,9 @@ def folder_delete(fid):
 
 @app.post("/api/asr/folders/<fid>/items")
 def folder_add_item(fid):
-    """把录音转写任务或聊天记录分享加入文件夹（去重）。body: {"kind","ref"}"""
+    """把录音转写任务或聊天记录分享加入文件夹（去重）。
+    body: {"kind","ref","copy":可选}——copy=true 复制语义：保留其他夹的归属
+    （一条记录可同时在多个夹）；缺省 move 语义：先从其他夹移出。"""
     user = authenticate()
     if user is None:
         return jsonify(error="unauthorized"), 401
@@ -2663,6 +2685,7 @@ def folder_add_item(fid):
     j = request.get_json(silent=True) or {}
     kind = str(j.get("kind") or "").strip()
     ref = str(j.get("ref") or "").strip()
+    is_copy = bool(j.get("copy"))
     err = _member_owned(kind, ref, user)
     if err:
         return jsonify(error=err), 404
@@ -2671,8 +2694,8 @@ def folder_add_item(fid):
         return jsonify(added=False, message="已在该文件夹中")
     if len(items) >= FOLDER_MAX_ITEMS:
         return jsonify(error="单个文件夹最多%d条" % FOLDER_MAX_ITEMS), 400
-    # move 语义：一条记录只归属一个文件夹，先从其他夹移出
-    moved_from = _detach_from_other_folders(user, fd["folder_id"], kind, ref)
+    # move 语义：一条记录只归属一个文件夹，先从其他夹移出；copy 语义保留多夹归属
+    moved_from = [] if is_copy else _detach_from_other_folders(user, fd["folder_id"], kind, ref)
     items.append({"kind": kind, "ref": ref, "added_at": time.time()})
     fd["items"] = items
     save_folder(fd)
@@ -2703,8 +2726,10 @@ def folder_remove_item(fid):
 
 @app.post("/api/asr/folders/<fid>/items/batch")
 def folder_add_items_batch(fid):
-    """批量加入条目（列表多选移入 / 文件夹内挑选添加共用）。
-    body: {"items":[{"kind","ref"},...]} → {added, skipped, failed:[{kind,ref,error}]}"""
+    """批量加入条目（列表多选移入 / 文件夹内挑选添加 / 夹内复制共用）。
+    body: {"items":[{"kind","ref"},...],"copy":可选}——copy=true 复制语义：
+    保留其他夹归属（一条记录可同时在多个夹）；缺省 move 语义（先从其他夹移出）。
+    → {added, skipped, failed:[{kind,ref,error}]}"""
     user = authenticate()
     if user is None:
         return jsonify(error="unauthorized"), 401
@@ -2717,6 +2742,7 @@ def folder_add_items_batch(fid):
         return jsonify(error="items 不能为空"), 400
     if len(raw) > FOLDER_MAX_ITEMS:
         return jsonify(error="单次最多%d条" % FOLDER_MAX_ITEMS), 400
+    is_copy = bool(j.get("copy"))
     items = fd.get("items") or []
     seen = {(it.get("kind"), str(it.get("ref"))) for it in items}
     added, skipped, moved_cnt = 0, 0, 0
@@ -2737,8 +2763,9 @@ def folder_add_items_batch(fid):
         if len(items) >= FOLDER_MAX_ITEMS:
             failed.append({"kind": kind, "ref": ref, "error": "文件夹已满"})
             continue
-        # move 语义：一条记录只归属一个文件夹，先从其他夹移出
-        moved_cnt += len(_detach_from_other_folders(user, fd["folder_id"], kind, ref))
+        # move 语义：一条记录只归属一个文件夹，先从其他夹移出；copy 语义保留多夹归属
+        if not is_copy:
+            moved_cnt += len(_detach_from_other_folders(user, fd["folder_id"], kind, ref))
         items.append({"kind": kind, "ref": ref, "added_at": time.time()})
         seen.add(key)
         added += 1

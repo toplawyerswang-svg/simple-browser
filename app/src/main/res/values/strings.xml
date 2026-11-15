@@ -448,6 +448,17 @@
     <string name="folder_batch_added">已移入「%1$s」，新增 %2$d 条</string>
     <string name="folder_batch_skipped">（%1$d 条已在夹中）</string>
     <string name="folder_batch_failed">（%1$d 条失败）</string>
+    <!-- 资料夹详情页多选模式（长按条目进入）：全选/反选 + 批量 移出本夹/移动到/复制到 -->
+    <string name="folder_select_title">已选 %1$d / %2$d</string>
+    <string name="folder_select_all">全选</string>
+    <string name="folder_select_invert">反选</string>
+    <string name="folder_select_remove">移出本夹</string>
+    <string name="folder_select_move">移动到…</string>
+    <string name="folder_select_copy">复制到…</string>
+    <string name="folder_copy_selected">复制到文件夹（已选 %1$d 项）</string>
+    <string name="folder_batch_copied">已复制到「%1$s」，新增 %2$d 条</string>
+    <string name="folder_batch_remove_confirm">把所选 %1$d 条移出本文件夹？\n记录本身不会被删除。</string>
+    <string name="folder_batch_removed">已移出 %1$d 条</string>
     <string name="folder_done">完成</string>
     <string name="folder_entry_count">资料夹：%1$d 个文件夹 · 已归入 %2$d 条</string>
     <string name="asr_all_filed">根目录没有待处理的录音
