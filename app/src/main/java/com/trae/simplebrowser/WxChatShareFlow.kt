@@ -341,10 +341,14 @@ object WxChatShareFlow {
             .setNegativeButton(R.string.wxchat_fill_skip) { _, _ ->
                 showResult(activity, results)
             }
+            .setNeutralButton(R.string.wxchat_fill_move_folder, null)
             .create()
         dialog.setOnShowListener {
-            val btn = dialog.getButton(AlertDialog.BUTTON_POSITIVE)
-            btn.setOnClickListener {
+            val btnSave = dialog.getButton(AlertDialog.BUTTON_POSITIVE)
+            val btnMove = dialog.getButton(AlertDialog.BUTTON_NEUTRAL)
+            // 保存=批量改名+写入映射并刷新本份快照；保存成功后按 after 收尾
+            // （positive=直出结果弹窗，neutral=接着选资料夹）
+            fun saveThen(after: (List<Success>) -> Unit) {
                 val toSave = editors.mapNotNull { (nick, edit) ->
                     val v = edit.text.toString().trim()
                     if (v.isNotEmpty()) nick to v else null
@@ -365,7 +369,8 @@ object WxChatShareFlow {
                         if (t != v) autoTitles[s.shareId] = t
                     }
                 }
-                btn.isEnabled = false
+                btnSave.isEnabled = false
+                btnMove.isEnabled = false
                 Thread {
                     try {
                         for ((sid, t) in manualTitles) AsrClient.renameWxChatShare(activity, sid, t)
@@ -378,14 +383,15 @@ object WxChatShareFlow {
                         val renamed = manualTitles + autoTitles
                         fireUi(activity) {
                             dialog.dismiss()
-                            showResult(activity, results.map { s ->
+                            after(results.map { s ->
                                 if (renamed.containsKey(s.shareId)) s.copy(displayName = renamed[s.shareId]!!)
                                 else s
                             })
                         }
                     } catch (e: Exception) {
                         fireUi(activity) {
-                            btn.isEnabled = true
+                            btnSave.isEnabled = true
+                            btnMove.isEnabled = true
                             if (!activity.isFinishing) {
                                 Toast.makeText(activity, activity.getString(R.string.asr_failed_prefix) +
                                     (e.message ?: e.toString()), Toast.LENGTH_LONG).show()
@@ -393,6 +399,18 @@ object WxChatShareFlow {
                         }
                     }
                 }.start()
+            }
+            btnSave.setOnClickListener { saveThen { showResult(activity, it) } }
+            // 左下「移入资料夹」：保存并归夹一步到位——保存已填内容后弹资料夹选择（含新建），
+            // 移入/取消/失败都回到结果弹窗，链接不因归夹而丢
+            btnMove.setOnClickListener {
+                saveThen { updated ->
+                    FolderAddFlow.moveBatch(activity, updated.map { "wxchat" to it.shareId },
+                        dialogTitle = if (updated.size == 1)
+                            activity.getString(R.string.folder_add_to, updated[0].displayName)
+                        else null,
+                        onSettle = { showResult(activity, updated) })
+                }
             }
         }
         dialog.show()

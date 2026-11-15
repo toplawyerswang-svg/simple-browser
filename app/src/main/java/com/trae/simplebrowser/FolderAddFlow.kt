@@ -17,9 +17,19 @@ object FolderAddFlow {
             dialogTitle = activity.getString(R.string.folder_add_to, title), onDone = onDone)
     }
 
-    /** 批量移入：payload 为 (kind, ref) 列表，服务端逐条 move。 */
+    /** 批量移入：payload 为 (kind, ref) 列表，服务端逐条 move。
+     *  onSettle 只触发一次且无论取消/失败/成功都会走到（收尾用，如转存流程弹结果），
+     *  与 onDone（仅移入成功后刷新调用方）互补；均在 UI 线程回调。 */
     fun moveBatch(activity: AppCompatActivity, payload: List<Pair<String, String>>,
-                  dialogTitle: String? = null, onDone: () -> Unit = {}) {
+                  dialogTitle: String? = null, onDone: () -> Unit = {},
+                  onSettle: (() -> Unit)? = null) {
+        var settled = false
+        fun settle() {
+            if (!settled) {
+                settled = true
+                activity.runOnUiThread { onSettle?.invoke() }
+            }
+        }
         Thread {
             try {
                 val list = AsrClient.listFolders(activity)
@@ -32,24 +42,26 @@ object FolderAddFlow {
                             ?: activity.getString(R.string.folder_move_selected, payload.size))
                         .setItems(options.toTypedArray()) { _, which ->
                             if (which == 0) {
-                                promptNewAndMove(activity, payload, onDone)
+                                promptNewAndMove(activity, payload, onDone, ::settle)
                             } else {
                                 val f = list[which - 1]
-                                addBatch(activity, f.folderId, f.name, payload, onDone)
+                                addBatch(activity, f.folderId, f.name, payload, onDone, ::settle)
                             }
                         }
-                        .setNegativeButton(android.R.string.cancel, null)
+                        .setNegativeButton(android.R.string.cancel) { _, _ -> settle() }
                         .show()
                 }
             } catch (e: Exception) {
                 showError(activity, e)
+                settle()
             }
         }.start()
     }
 
     /** 新建文件夹后立即移入。 */
     private fun promptNewAndMove(activity: AppCompatActivity,
-                                 payload: List<Pair<String, String>>, onDone: () -> Unit) {
+                                 payload: List<Pair<String, String>>, onDone: () -> Unit,
+                                 settle: () -> Unit) {
         val input = EditText(activity).apply {
             hint = activity.getString(R.string.folder_name_hint)
             setSingleLine(true)
@@ -57,7 +69,7 @@ object FolderAddFlow {
         AlertDialog.Builder(activity)
             .setTitle(R.string.folder_create_title)
             .setView(input)
-            .setNegativeButton(android.R.string.cancel, null)
+            .setNegativeButton(android.R.string.cancel) { _, _ -> settle() }
             .setPositiveButton(android.R.string.ok) { _, _ ->
                 val name = input.text.toString().trim()
                 if (name.isEmpty()) return@setPositiveButton
@@ -66,10 +78,11 @@ object FolderAddFlow {
                         val fid = AsrClient.createFolder(activity, name)
                         activity.runOnUiThread {
                             if (dead(activity)) return@runOnUiThread
-                            addBatch(activity, fid, name, payload, onDone)
+                            addBatch(activity, fid, name, payload, onDone, settle)
                         }
                     } catch (e: Exception) {
                         showError(activity, e)
+                        settle()
                     }
                 }.start()
             }
@@ -78,7 +91,8 @@ object FolderAddFlow {
 
     /** 统一走批量接口移入（单条即 1 项批量）：一次请求拿到新增/跳过/失败计数，提示口径一致。 */
     private fun addBatch(activity: AppCompatActivity, folderId: String, folderName: String,
-                         payload: List<Pair<String, String>>, onDone: () -> Unit) {
+                         payload: List<Pair<String, String>>, onDone: () -> Unit,
+                         settle: () -> Unit) {
         Thread {
             try {
                 val (added, skipped, failed) = AsrClient.folderAddItems(activity, folderId, payload)
@@ -89,9 +103,11 @@ object FolderAddFlow {
                     if (failed > 0) msg += activity.getString(R.string.folder_batch_failed, failed)
                     Toast.makeText(activity, msg, Toast.LENGTH_LONG).show()
                     onDone()
+                    settle()
                 }
             } catch (e: Exception) {
                 showError(activity, e)
+                settle()
             }
         }.start()
     }
