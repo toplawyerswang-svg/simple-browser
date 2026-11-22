@@ -63,6 +63,7 @@ import com.trae.simplebrowser.core.ProfileManager
 import com.trae.simplebrowser.core.SearchEngines
 import com.trae.simplebrowser.core.SuggestEngine
 import com.trae.simplebrowser.core.TabManager
+import com.trae.simplebrowser.core.TabMatcher
 import com.trae.simplebrowser.core.VideoKind
 import com.trae.simplebrowser.core.VideoUrlSniffer
 import com.trae.simplebrowser.databinding.ActivityMainBinding
@@ -120,6 +121,15 @@ class MainActivity : AppCompatActivity() {
     private val tabWebViews = mutableMapOf<Long, WebView>()
     private var webViewLayoutParams: ViewGroup.LayoutParams? = null
 
+    // ---------- 标签热池（v1.20.0） ----------
+    /** 同时保持"真身"的 WebView 数上限；超出的标签冻结（saveState 后销毁），切回时恢复。
+     *  冻结标签不占渲染内存但仍是打开状态，恢复约 2~4 秒（历史/登录态保留，滚动位置不保证）。 */
+    private val liveWebViewLimit = 6
+    /** 冻结标签的页面状态（进程内有效；标签仍占位计入标签数） */
+    private val tabFrozenStates = mutableMapOf<Long, Bundle>()
+    /** 标签最近活跃时刻：快捷方式复用匹配与热池淘汰的 LRU 依据 */
+    private val tabLastActiveAt = mutableMapOf<Long, Long>()
+
     // ---------- 桌面版 UA（F-15，按标签记忆） ----------
     private val tabDesktopMode = mutableMapOf<Long, Boolean>()
 
@@ -149,7 +159,7 @@ class MainActivity : AppCompatActivity() {
             ?: error("no WebView for tab ${tabManager.currentId}")
 
     private fun attachTabWebView(tabId: Long) {
-        val target = tabWebViews[tabId] ?: return
+        val target = tabWebViews[tabId] ?: thawTab(tabId) ?: return
         val old = tabWebViews[tabManager.currentId]
         if (old != null && old !== target) {
             old.onPause()
@@ -160,12 +170,75 @@ class MainActivity : AppCompatActivity() {
         }
         target.onResume()
         tabManager.select(tabId)
+        tabLastActiveAt[tabId] = SystemClock.elapsedRealtime()
         setAddressBarText(target.url.orEmpty())
         updateBookmarkIcon()
         updateIdentityBadge()
         applyAdBadge()
         hideFindBar()
+        trimLiveWebViews()
         Log.d(logTag, "Tab attach: $tabId, url=${target.url.orEmpty().take(60)}")
+    }
+
+    /** 冻结标签：saveState 保存页面状态后销毁 WebView，释放渲染内存；标签仍占位，切回时恢复 */
+    private fun freezeTab(tabId: Long) {
+        if (tabId == tabManager.currentId) return
+        val view = tabWebViews.remove(tabId) ?: return
+        val state = Bundle()
+        val backList = runCatching { view.saveState(state) }.getOrNull()
+        if (backList != null && backList.size > 0) {
+            tabFrozenStates[tabId] = state
+        }
+        (view.parent as? ViewGroup)?.removeView(view)
+        view.removeAllViews()
+        view.destroy()
+        Log.i(
+            logTag,
+            "Tab frozen: $tabId state=${state != null} (live=${tabWebViews.size}, frozen=${tabFrozenStates.size})"
+        )
+    }
+
+    /** 热池超限时冻结最久未用的非当前标签 */
+    private fun trimLiveWebViews() {
+        var excess = tabWebViews.size - liveWebViewLimit
+        if (excess <= 0) return
+        tabWebViews.keys.filter { it != tabManager.currentId }
+            .sortedBy { tabLastActiveAt[it] ?: 0L }
+            .takeWhile { excess > 0 }
+            .forEach {
+                freezeTab(it)
+                excess--
+            }
+    }
+
+    /** 恢复冻结标签：重建 WebView、按原身份绑定、restoreState 恢复页面（自动重载，秒级）。
+     *  无状态可恢复（冻结时页面还没加载出历史）则按标签记录的 URL 重新加载。 */
+    private fun thawTab(tabId: Long): WebView? {
+        val tab = tabManager.tabs.firstOrNull { it.id == tabId } ?: return null
+        val state = tabFrozenStates.remove(tabId)
+        val webView = WebView(this)
+        if (!ProfileManager.applyTo(webView, tab.profile)) {
+            // 绑定失败绝不能按该身份继续，否则会与其他账号串登录态；宁可该标签打不开
+            Log.e(logTag, "profile bind failed on thaw: ${tab.profile}")
+            Toast.makeText(this, R.string.identity_unsupported, Toast.LENGTH_LONG).show()
+            webView.destroy()
+            return null
+        }
+        setupWebView(webView, tab.profile)
+        if (tabDesktopMode[tabId] == true) {
+            webView.settings.userAgentString = DESKTOP_USER_AGENT
+        }
+        tabWebViews[tabId] = webView
+        val backList = state?.let { runCatching { webView.restoreState(it) }.getOrNull() }
+        val restored = backList != null && backList.size > 0
+        if (!restored) {
+            webView.loadUrl(tab.url.ifBlank { homeUrl() })
+        }
+        Log.i(
+            logTag,
+            "Tab thawed: $tabId url=${tab.url.take(60)} restored=$restored (live=${tabWebViews.size})"
+        )
+        return webView
     }
 
     private fun ensureWebViewLayoutParams(): ViewGroup.LayoutParams {
@@ -219,18 +292,24 @@ class MainActivity : AppCompatActivity() {
         updateBookmarkIcon()
         updateIdentityBadge()
         updateTabBadge()
+        tabLastActiveAt[tab.id] = SystemClock.elapsedRealtime()
         Log.i(logTag, "Tab created: ${tab.id} url=$url identity=$identity (total=${tabManager.size})")
+        trimLiveWebViews()
         return tab.id
     }
 
     private fun currentWebViewSafe(): WebView? = tabWebViews[tabManager.currentId]
 
-    /** 关闭标签；关到最后一个时自动补开主页标签 */
+    /** 关闭标签；关到最后一个时自动补开主页标签。冻结标签没有真身，只清理状态 */
     private fun closeTab(tabId: Long) {
-        val view = tabWebViews.remove(tabId) ?: return
-        (view.parent as? ViewGroup)?.removeView(view)
-        view.removeAllViews()
-        view.destroy()
+        val view = tabWebViews.remove(tabId)
+        tabFrozenStates.remove(tabId)
+        tabLastActiveAt.remove(tabId)
+        if (view != null) {
+            (view.parent as? ViewGroup)?.removeView(view)
+            view.removeAllViews()
+            view.destroy()
+        }
         val nextId = tabManager.close(tabId)
         if (nextId == null) {
             Log.i(logTag, "Tab closed: $tabId -> no tabs left, open home tab")
@@ -523,6 +602,7 @@ class MainActivity : AppCompatActivity() {
             setupWebView(binding.webView)
             val firstTab = tabManager.create(url = homeUrl())
             tabWebViews[firstTab.id] = binding.webView
+            tabLastActiveAt[firstTab.id] = SystemClock.elapsedRealtime()
         }
         setupControls()
         updateTabBadge()
@@ -554,14 +634,23 @@ class MainActivity : AppCompatActivity() {
         setIntent(intent)
         val identity = resolveIdentityExtra(intent)
         val url = intent.dataString
-        if (identity > 1) {
-            // 身份快捷方式：新开该身份标签并加载目标网址
-            openNewTab(url?.takeIf { it.isNotBlank() } ?: homeUrl(), identity)
-            Toast.makeText(this, getString(R.string.identity_opened, identity), Toast.LENGTH_SHORT).show()
-        } else if (intent.hasExtra(EXTRA_IDENTITY) && currentTabIdentity() != 1) {
-            // 身份1 快捷方式：当前标签不是身份1 时新开身份1标签，
-            // 避免"身份1的快捷方式却在身份2/3标签里打开、登录态对不上"
-            openNewTab(url?.takeIf { it.isNotBlank() } ?: homeUrl(), 1)
+        if (intent.hasExtra(EXTRA_IDENTITY)) {
+            // 桌面快捷方式（含身份快捷方式）：同身份+同域名的标签已开着就直接切回，
+            // 不重新加载——页面滚到哪、登录态全保留，瞬间显示；没有才新开标签加载
+            val profileName = ProfileManager.profileNameOf(identity)
+            val reuseId = TabMatcher.findReusableTabId(tabManager.tabs, url, profileName, tabLastActiveAt)
+            if (reuseId != null) {
+                Log.i(logTag, "onNewIntent -> shortcut reuse tab $reuseId (identity=$identity)")
+                attachTabWebView(reuseId)
+            } else if (identity > 1) {
+                // 身份快捷方式：新开该身份标签并加载目标网址
+                openNewTab(url?.takeIf { it.isNotBlank() } ?: homeUrl(), identity)
+                Toast.makeText(this, getString(R.string.identity_opened, identity), Toast.LENGTH_SHORT).show()
+            } else {
+                // 身份1 快捷方式：不再重载当前标签（避免把正看的页面顶掉），统一新开标签，
+                // 避免"身份1的快捷方式却在身份2/3标签里打开、登录态对不上"
+                openNewTab(url?.takeIf { it.isNotBlank() } ?: homeUrl(), 1)
+            }
         } else if (!url.isNullOrBlank()) {
             Log.i(logTag, "onNewIntent -> loadUrl: $url")
             loadUrl(url)
@@ -765,6 +854,8 @@ class MainActivity : AppCompatActivity() {
             wv.destroy()
         }
         tabWebViews.clear()
+        tabFrozenStates.clear()
+        tabLastActiveAt.clear()
         AdBlockEngine.persistTotalBlocked(this)
         probeExecutor.shutdownNow()
         unregisterDownloadCompleteReceiver()

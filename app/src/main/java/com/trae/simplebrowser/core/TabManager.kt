@@ -80,7 +80,8 @@ class TabManager(private val maxTabs: Int = DEFAULT_MAX_TABS) {
     }
 
     companion object {
-        const val DEFAULT_MAX_TABS = 8
+        /** 标签上限：用户设想同时开最多 15 个网页（超限 Toast，不自动挤占） */
+        const val DEFAULT_MAX_TABS = 15
         const val DEFAULT_TITLE = "新标签页"
     }
 }

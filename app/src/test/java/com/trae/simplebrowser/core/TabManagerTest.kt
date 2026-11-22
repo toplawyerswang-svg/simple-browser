@@ -115,6 +115,7 @@ class TabManagerTest {
         assertEquals(0, m.indexOf(a.id))
         assertEquals(1, m.indexOf(b.id))
         assertEquals(-1, m.indexOf(123L))
-        assertEquals(8, TabManager.DEFAULT_MAX_TABS)
+        // v1.20.0 起：用户设想同时开最多 15 个网页，上限 8 → 15
+        assertEquals(15, TabManager.DEFAULT_MAX_TABS)
     }
 }
