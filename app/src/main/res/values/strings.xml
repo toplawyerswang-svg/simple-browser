@@ -245,6 +245,19 @@
     <string name="label_choose_file">选择文件</string>
     <string name="label_version">版本: %s</string>
 
+    <!-- 版本更新（F-44） -->
+    <string name="setting_section_update">版本更新</string>
+    <string name="setting_check_update">检查更新</string>
+    <string name="setting_update_current_fmt">当前版本 %1$s</string>
+    <string name="setting_update_checking">正在检查更新…</string>
+    <string name="setting_update_latest_fmt">已是最新版本（%1$s）</string>
+    <string name="setting_update_available_fmt">发现新版本 %1$s，开始下载…</string>
+    <string name="setting_update_downloading_fmt">下载中 %1$d%%</string>
+    <string name="setting_update_ready">下载完成，正在打开安装界面…</string>
+    <string name="setting_update_need_permission">需要「安装未知应用」权限，已在系统设置页打开，允许后回来再点一次「检查更新」</string>
+    <string name="setting_update_check_failed">检查更新失败，请检查网络后重试</string>
+    <string name="setting_update_download_failed">下载失败或校验不符，请重试</string>
+
     <!-- 扫码（F-06） -->
     <string name="action_scan">扫码</string>
     <string name="scan_title">扫一扫</string>

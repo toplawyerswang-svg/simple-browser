@@ -225,6 +225,35 @@
                     android:text="@string/setting_clear_browsing"
                     android:textAppearance="?attr/textAppearanceListItem" />
 
+                <!-- 版本更新（F-44）：设置页手动检查，下载完成自动弹系统安装窗 -->
+                <TextView
+                    android:id="@+id/updateSectionTitle"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="20dp"
+                    android:text="@string/setting_section_update"
+                    android:textAppearance="?attr/textAppearanceSubtitle2"
+                    android:textColor="#1565C0" />
+
+                <TextView
+                    android:id="@+id/checkUpdateRow"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="12dp"
+                    android:background="?attr/selectableItemBackground"
+                    android:paddingTop="10dp"
+                    android:paddingBottom="10dp"
+                    android:text="@string/setting_check_update"
+                    android:textAppearance="?attr/textAppearanceListItem" />
+
+                <TextView
+                    android:id="@+id/updateStatusTextView"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="2dp"
+                    android:textAppearance="?attr/textAppearanceBody2"
+                    android:textColor="#666666" />
+
                 <LinearLayout
                     android:id="@+id/usageContainer"
                     android:layout_width="match_parent"

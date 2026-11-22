@@ -33,9 +33,11 @@ import android.widget.Toast
 import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.ContextCompat
+import androidx.core.content.pm.PackageInfoCompat
 import com.google.android.material.tabs.TabLayout
 import org.json.JSONObject
 import com.trae.simplebrowser.core.AdBlockEngine
+import com.trae.simplebrowser.core.AppUpdate
 import com.trae.simplebrowser.core.AsrTranscripts
 import com.trae.simplebrowser.core.DownloadKind
 import com.trae.simplebrowser.core.DownloadRecord
@@ -45,6 +47,7 @@ import java.io.File
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+import kotlin.concurrent.thread
 
 /**
  * 设置页：双标签页（下载管理 | 音频识别）。
@@ -188,6 +191,7 @@ class SettingsActivity : AppCompatActivity() {
 
         setupAdBlock()
         setupBrowsePrefs()
+        setupUpdateCheck()
         setupTabs()
         setupAsrManage()
         setupWxChatManage()
@@ -242,6 +246,91 @@ class SettingsActivity : AppCompatActivity() {
         binding.homePageStatusTextView.text = getString(R.string.setting_home_page_fmt, home)
         binding.textZoomStatusTextView.text =
             getString(R.string.setting_text_zoom_fmt, AppPrefs.getTextZoom(this))
+    }
+
+    // ---------- 版本更新（F-44）：手动检查 → 自动下载 → sha256 校验 → 自动弹系统安装窗 ----------
+    private var updateBusy = false
+
+    private fun currentVersionInfo(): Pair<Long, String> {
+        val pi = runCatching { packageManager.getPackageInfo(packageName, 0) }.getOrNull()
+        val code = pi?.let { PackageInfoCompat.getLongVersionCode(it) } ?: 0L
+        val name = pi?.versionName.orEmpty()
+        return code to name
+    }
+
+    private fun setupUpdateCheck() {
+        binding.checkUpdateRow.setOnClickListener { startUpdateCheck() }
+        resetUpdateStatus()
+    }
+
+    private fun resetUpdateStatus() {
+        val (code, name) = currentVersionInfo()
+        binding.updateStatusTextView.text =
+            getString(R.string.setting_update_current_fmt, "v$name/$code")
+    }
+
+    private fun startUpdateCheck() {
+        if (updateBusy || isFinishing || isDestroyed) return
+        updateBusy = true
+        binding.updateStatusTextView.text = getString(R.string.setting_update_checking)
+        thread(name = "update-check") {
+            val result = runCatching { UpdateManager.checkLatest() }.getOrElse { UpdateManager.CheckResult.Failed }
+            runOnUiThread {
+                if (isFinishing || isDestroyed) {
+                    updateBusy = false
+                    return@runOnUiThread
+                }
+                when (result) {
+                    is UpdateManager.CheckResult.UpToDate -> {
+                        updateBusy = false
+                        binding.updateStatusTextView.text =
+                            getString(R.string.setting_update_latest_fmt, result.versionName ?: getString(R.string.app_name))
+                    }
+                    is UpdateManager.CheckResult.Available ->
+                        if (AppUpdate.isUpdateAvailable(result.info.versionCode, currentVersionInfo().first)) {
+                            startDownload(result.info)
+                        } else {
+                            // 服务端版本码不高于本机（如刚发布过旧包）：按最新处理
+                            updateBusy = false
+                            binding.updateStatusTextView.text =
+                                getString(R.string.setting_update_latest_fmt, result.info.versionName)
+                        }
+                    UpdateManager.CheckResult.Failed -> {
+                        updateBusy = false
+                        binding.updateStatusTextView.text = getString(R.string.setting_update_check_failed)
+                    }
+                }
+            }
+        }
+    }
+
+    private fun startDownload(info: UpdateManager.UpdateInfo) {
+        binding.updateStatusTextView.text = getString(R.string.setting_update_available_fmt, info.versionName)
+        thread(name = "update-download") {
+            val file = UpdateManager.downloadApk(applicationContext, info) { pct ->
+                runOnUiThread {
+                    if (!isFinishing && !isDestroyed) {
+                        binding.updateStatusTextView.text = getString(R.string.setting_update_downloading_fmt, pct)
+                    }
+                }
+            }
+            runOnUiThread {
+                if (isFinishing || isDestroyed) {
+                    updateBusy = false
+                    return@runOnUiThread
+                }
+                updateBusy = false
+                if (file == null) {
+                    binding.updateStatusTextView.text = getString(R.string.setting_update_download_failed)
+                    return@runOnUiThread
+                }
+                binding.updateStatusTextView.text = getString(R.string.setting_update_ready)
+                val granted = UpdateManager.installApk(this, file)
+                if (!granted) {
+                    binding.updateStatusTextView.text = getString(R.string.setting_update_need_permission)
+                }
+            }
+        }
     }
 
     private fun showSearchEngineDialog() {

@@ -10,6 +10,8 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" android:maxSdkVersion="28" />
+    <!-- 应用内检查更新（F-44）：下载更新包后触发系统安装窗；系统确认仍必现，此权限仅允许发起 -->
+    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
 
     <!-- 扫码用相机；声明 required=false 兼容无相机设备 -->
     <uses-feature android:name="android.hardware.camera" android:required="false" />
@@ -66,6 +68,17 @@
             android:name=".VideoDownloadService"
             android:exported="false"
             android:foregroundServiceType="dataSync" />
+
+        <!-- 应用内更新（F-44）：更新包经 FileProvider 交给系统安装器 -->
+        <provider
+            android:name="androidx.core.content.FileProvider"
+            android:authorities="${applicationId}.updatefiles"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/file_paths" />
+        </provider>
 
         <!-- 转写处理前台服务：保住切后台后的网络与进程，转写不被系统中断 -->
         <service
