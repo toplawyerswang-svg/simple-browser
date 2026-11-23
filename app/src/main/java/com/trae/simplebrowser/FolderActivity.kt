@@ -52,6 +52,12 @@ class FolderActivity : AppCompatActivity() {
 
     private var previewWebView: WebView? = null
 
+    // 研究部绑定状态（详情态顶部信息条 + 「⋯」菜单弹窗）：
+    // yjStatusFolderId 标记当前缓存属于哪个资料夹，切夹/刷新时丢弃过期状态
+    private var yjStatus: AsrClient.YanjiubuStatus? = null
+    private var yjStatusFolderId: String? = null
+    private var yjPolling = false
+
     private val ttlValues = intArrayOf(1, 24, 72, 168, 720)
     private val opensValues = intArrayOf(1, 5, 10, 0)
 
@@ -179,6 +185,255 @@ class FolderActivity : AppCompatActivity() {
         }.start()
     }
 
+    // ---------- 研究部绑定（详情态信息条 + 「⋯」菜单弹窗 + 一键建档）
+
+    private fun yjChannelLabel(channel: String?): String = when (channel) {
+        "coze" -> "扣子"
+        "openclaw" -> "OpenClaw"
+        "none" -> "仅平台档案"
+        else -> "未知通道"
+    }
+
+    private fun yjStatusText(): String {
+        val d = detail ?: return ""
+        val s = yjStatus
+        if (s == null || yjStatusFolderId != d.folderId) return getString(R.string.yj_status_checking)
+        if (!s.configured) return getString(R.string.yj_status_unconfigured)
+        if (s.platformError != null) return getString(R.string.yj_status_unknown)
+        val b = s.binding
+        if (!s.bound || b == null) return getString(R.string.yj_status_unbound)
+        val agent = b.agentName
+        return if (agent.isNullOrBlank()) {
+            getString(R.string.yj_status_bound_no_agent, b.yjFolderName)
+        } else {
+            getString(R.string.yj_status_bound, b.yjFolderName, agent, yjChannelLabel(b.agentChannel))
+        }
+    }
+
+    private fun renderYjStatus() {
+        if (detail == null) {
+            binding.tvYjStatus.visibility = View.GONE
+            return
+        }
+        binding.tvYjStatus.visibility = View.VISIBLE
+        binding.tvYjStatus.text = yjStatusText()
+        binding.tvYjStatus.setTextColor(
+            if (yjStatus?.platformError != null) 0xFFB26A00.toInt() else 0xFF5F6368.toInt()
+        )
+    }
+
+    private fun loadYanjiubuStatus() {
+        val d = detail ?: return
+        Thread {
+            try {
+                val st = AsrClient.folderYanjiubuStatus(this, d.folderId)
+                runOnUiThread {
+                    if (isFinishing || isDestroyed) return@runOnUiThread
+                    if (detail?.folderId != d.folderId) return@runOnUiThread
+                    yjStatus = st
+                    yjStatusFolderId = d.folderId
+                    renderYjStatus()
+                }
+            } catch (e: Exception) {
+                // 状态查询失败不打断资料夹使用：信息条置为「状态未知」，操作入口仍可点（重试）
+                runOnUiThread {
+                    if (isFinishing || isDestroyed) return@runOnUiThread
+                    if (detail?.folderId != d.folderId) return@runOnUiThread
+                    yjStatus = AsrClient.YanjiubuStatus(
+                        configured = true, bound = false, binding = null,
+                        platformError = errText(e), error = null
+                    )
+                    renderYjStatus()
+                }
+            }
+        }.start()
+    }
+
+    private fun showYjMessage(title: String, message: String) {
+        AlertDialog.Builder(this).setTitle(title).setMessage(message)
+            .setPositiveButton(android.R.string.ok, null).show()
+    }
+
+    /** 「⋯」→「研究部绑定…」：查最新状态后分流（已绑定看详情 / 未绑定走一键确认）。 */
+    private fun showYanjiubuDialog() {
+        val d = detail ?: return
+        val loading = AlertDialog.Builder(this)
+            .setTitle(R.string.yj_bound_title)
+            .setMessage(R.string.yj_loading)
+            .setCancelable(false)
+            .show()
+        Thread {
+            try {
+                val st = AsrClient.folderYanjiubuStatus(this, d.folderId)
+                runOnUiThread {
+                    if (isFinishing || isDestroyed) return@runOnUiThread
+                    loading.dismiss()
+                    yjStatus = st
+                    yjStatusFolderId = d.folderId
+                    renderYjStatus()
+                    when {
+                        !st.configured -> showYjMessage(
+                            getString(R.string.yj_bound_title),
+                            st.error ?: getString(R.string.yj_status_unconfigured)
+                        )
+                        st.platformError != null -> AlertDialog.Builder(this)
+                            .setTitle(R.string.yj_bound_title)
+                            .setMessage(getString(R.string.yj_query_failed, st.platformError))
+                            .setPositiveButton(R.string.yj_retry) { _, _ -> showYanjiubuDialog() }
+                            .setNegativeButton(android.R.string.cancel, null)
+                            .show()
+                        st.bound && st.binding != null -> showYjBoundDialog(st.binding)
+                        else -> confirmBindYanjiubu()
+                    }
+                }
+            } catch (e: Exception) {
+                runOnUiThread {
+                    if (isFinishing || isDestroyed) return@runOnUiThread
+                    loading.dismiss()
+                    uiError(e)
+                }
+            }
+        }.start()
+    }
+
+    private fun showYjBoundDialog(b: AsrClient.YanjiubuBinding) {
+        val agent = if (b.agentName.isNullOrBlank()) {
+            getString(R.string.yj_agent_none)
+        } else {
+            "${b.agentName}（${yjChannelLabel(b.agentChannel)}）"
+        }
+        AlertDialog.Builder(this)
+            .setTitle(R.string.yj_bound_title)
+            .setMessage(getString(R.string.yj_bound_msg, b.yjFolderName, agent))
+            .setPositiveButton(R.string.yj_open_site) { _, _ -> openYanjiubuSite() }
+            .setNegativeButton(android.R.string.cancel, null)
+            .show()
+    }
+
+    private fun openYanjiubuSite() {
+        try {
+            startActivity(Intent(Intent.ACTION_VIEW, android.net.Uri.parse("https://yanjiubu.orientlaw.cn/reports")))
+        } catch (e: Exception) {
+            toast(R.string.yj_site_unavailable)
+        }
+    }
+
+    private fun confirmBindYanjiubu() {
+        val d = detail ?: return
+        AlertDialog.Builder(this)
+            .setTitle(R.string.yj_confirm_title)
+            .setMessage(getString(R.string.yj_confirm_msg, d.name))
+            .setPositiveButton(R.string.yj_confirm_ok) { _, _ -> startYanjiubuBind(d.folderId) }
+            .setNegativeButton(android.R.string.cancel, null)
+            .show()
+    }
+
+    private fun startYanjiubuBind(folderId: String) {
+        val progress = AlertDialog.Builder(this)
+            .setTitle(R.string.yj_confirm_title)
+            .setMessage(R.string.yj_binding_step)
+            .setCancelable(false)
+            .show()
+        Thread {
+            try {
+                val r = AsrClient.bindFolderYanjiubu(this, folderId)
+                runOnUiThread {
+                    if (isFinishing || isDestroyed) return@runOnUiThread
+                    progress.setMessage(getString(R.string.yj_agent_creating))
+                    pollYanjiubuBind(folderId, progress)
+                }
+            } catch (e: Exception) {
+                runOnUiThread {
+                    if (isFinishing || isDestroyed) return@runOnUiThread
+                    progress.dismiss()
+                    AlertDialog.Builder(this)
+                        .setTitle(R.string.yj_bind_failed_title)
+                        .setMessage(getString(R.string.yj_bind_failed, errText(e)))
+                        .setPositiveButton(R.string.yj_retry) { _, _ -> startYanjiubuBind(folderId) }
+                        .setNegativeButton(android.R.string.cancel, null)
+                        .show()
+                }
+            }
+        }.start()
+    }
+
+    /** 绑定已落库、Agent 后台创建中：3 秒一轮最多 90 秒；到点未就绪如实提示「后台创建中」。 */
+    private fun pollYanjiubuBind(folderId: String, progress: AlertDialog) {
+        if (yjPolling) {
+            progress.dismiss()
+            return
+        }
+        yjPolling = true
+        Thread {
+            val deadline = System.currentTimeMillis() + 90_000
+            var last: AsrClient.YanjiubuStatus? = null
+            try {
+                while (System.currentTimeMillis() < deadline) {
+                    try {
+                        val st = AsrClient.folderYanjiubuStatus(this, folderId)
+                        last = st
+                        if (st.bound) {
+                            runOnUiThread {
+                                if (!isFinishing && !isDestroyed && detail?.folderId == folderId) {
+                                    yjStatus = st
+                                    yjStatusFolderId = folderId
+                                    renderYjStatus()
+                                }
+                            }
+                            if (st.binding?.agentName != null) break
+                        }
+                    } catch (_: Exception) {
+                        // 创建期间偶发失败继续轮询（不把一次网络抖动当结果）
+                    }
+                    Thread.sleep(3000)
+                }
+            } finally {
+                yjPolling = false
+            }
+            runOnUiThread {
+                if (isFinishing || isDestroyed) return@runOnUiThread
+                progress.dismiss()
+                val b = last?.binding
+                val name = b?.yjFolderName ?: detail?.name ?: ""
+                val agent = b?.agentName
+                when {
+                    !agent.isNullOrBlank() -> showYjMessage(
+                        getString(R.string.yj_bound_title),
+                        getString(R.string.yj_bind_done_agent, name, agent)
+                    )
+                    b != null -> showYjMessage(
+                        getString(R.string.yj_bound_title),
+                        getString(R.string.yj_agent_creating_done, name)
+                    )
+                    else -> showYjMessage(
+                        getString(R.string.yj_bound_title),
+                        getString(R.string.yj_bind_unconfirmed, name)
+                    )
+                }
+                loadYanjiubuStatus()
+                refreshFoldersQuiet()
+            }
+        }.start()
+    }
+
+    /** 后台刷新列表（徽标），不打断当前详情页。 */
+    private fun refreshFoldersQuiet() {
+        Thread {
+            try {
+                val list = AsrClient.listFolders(this)
+                runOnUiThread {
+                    if (isFinishing || isDestroyed) return@runOnUiThread
+                    folders = list
+                    if (detail == null) {
+                        adapter.notifyDataSetChanged()
+                        renderFolderEmpty()
+                    }
+                }
+            } catch (_: Exception) {
+            }
+        }.start()
+    }
+
     private fun applyChrome() {
         val d = detail
         if (d == null) {
@@ -191,6 +446,7 @@ class FolderActivity : AppCompatActivity() {
             binding.folderEmptyHint.text = getString(R.string.folder_list_empty)
             binding.selectTopBar.visibility = View.GONE
             binding.selectBottomBar.visibility = View.GONE
+            binding.tvYjStatus.visibility = View.GONE
         } else if (selectMode) {
             // 多选态：标题换计数，隐藏右上动作，露出 全选/反选 与底部批量条
             val alive = d.entries.count { it.alive }
@@ -201,6 +457,7 @@ class FolderActivity : AppCompatActivity() {
             binding.folderSearchInput.visibility = View.GONE
             binding.selectTopBar.visibility = View.VISIBLE
             binding.selectBottomBar.visibility = View.VISIBLE
+            binding.tvYjStatus.visibility = View.GONE
         } else {
             binding.tvTitle.text = d.name
             // 详情态：在夹内向里添加外面的录音/聊天记录（多选）
@@ -211,17 +468,28 @@ class FolderActivity : AppCompatActivity() {
             binding.folderSearchInput.visibility = View.GONE
             binding.selectTopBar.visibility = View.GONE
             binding.selectBottomBar.visibility = View.GONE
+            // 研究部绑定信息条：已绑定常显；未绑定/未知也给一行提示（点「⋯」操作）
+            binding.tvYjStatus.visibility = View.VISIBLE
+            renderYjStatus()
         }
     }
 
     private fun openFolder(f: AsrClient.FolderInfo) {
         detail = AsrClient.FolderDetail(f.folderId, f.name, emptyList())
+        // 列表摘要里已有绑定信息就先渲染，详情/状态接口返回后再刷新（避免信息条闪烁空白）
+        yjStatusFolderId = f.folderId
+        yjStatus = f.yj?.let {
+            AsrClient.YanjiubuStatus(configured = true, bound = true, binding = it, platformError = null, error = null)
+        }
+        loadYanjiubuStatus()
         loadDetail()
     }
 
     private fun exitDetail() {
         exitSelectMode()
         detail = null
+        yjStatus = null
+        yjStatusFolderId = null
         loadList()
     }
 
@@ -246,6 +514,9 @@ class FolderActivity : AppCompatActivity() {
                 v.findViewById<TextView>(R.id.item_name).text = f.name
                 v.findViewById<TextView>(R.id.item_meta).text =
                     getString(R.string.folder_item_count, f.itemCount)
+                // 研究部徽标：仅已绑定显示（未配置/未绑定都不打扰列表观感）
+                v.findViewById<TextView>(R.id.item_yj).visibility =
+                    if (f.yj != null) View.VISIBLE else View.GONE
                 return v
             }
             val v = convertView ?: LayoutInflater.from(this@FolderActivity)
@@ -685,12 +956,14 @@ class FolderActivity : AppCompatActivity() {
         AlertDialog.Builder(this)
             .setTitle(d.name)
             .setItems(arrayOf(
+                getString(R.string.yj_menu_entry),
                 getString(R.string.wxchat_item_rename),
                 getString(R.string.folder_delete_title))) { _, which ->
                 when (which) {
-                    0 -> promptRenameFolder(AsrClient.FolderInfo(
+                    0 -> showYanjiubuDialog()
+                    1 -> promptRenameFolder(AsrClient.FolderInfo(
                         d.folderId, d.name, d.entries.size, d.entries.count { it.alive }, 0L))
-                    1 -> confirmDeleteFolder(AsrClient.FolderInfo(
+                    2 -> confirmDeleteFolder(AsrClient.FolderInfo(
                         d.folderId, d.name, d.entries.size, d.entries.count { it.alive }, 0L))
                 }
             }

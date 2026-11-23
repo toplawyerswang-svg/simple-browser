@@ -482,4 +482,32 @@
     <string name="wxchat_search_hint">🔍 搜索标题或成员</string>
     <string name="folder_search_hint">🔍 搜索文件夹</string>
     <string name="search_no_match">无匹配「%1$s」的结果，换个关键词试试</string>
+
+    <!-- 研究部绑定（资料夹 ↔ 研究部文件夹 + 文件夹专属 Agent） -->
+    <string name="yj_badge">研究部</string>
+    <string name="yj_menu_entry">研究部绑定…</string>
+    <string name="yj_bound_title">研究部绑定</string>
+    <string name="yj_loading">正在读取研究部绑定状态…</string>
+    <string name="yj_status_checking">研究部：读取中…</string>
+    <string name="yj_status_unconfigured">研究部：服务端未配置桥接（需设置 yanjiubu_bridge_token）</string>
+    <string name="yj_status_unknown">研究部：绑定状态未知（平台暂时不可达）</string>
+    <string name="yj_status_unbound">研究部：未绑定（点「⋯」→ 研究部绑定…）</string>
+    <string name="yj_status_bound">研究部：「%1$s」· Agent %2$s（%3$s）</string>
+    <string name="yj_status_bound_no_agent">研究部：「%1$s」· 专属 Agent 未创建</string>
+    <string name="yj_query_failed">查询失败：%1$s</string>
+    <string name="yj_retry">重试</string>
+    <string name="yj_confirm_title">绑定研究部</string>
+    <string name="yj_confirm_msg">将在研究部创建同名文件夹「%1$s」并绑定；若该文件夹尚无专属 Agent，会自动创建一个（扣子通道 · Deepseek-V4.1-Flash，后台约 30 秒）。\n\n研究部已有同名文件夹则直接复用，不会重复创建。</string>
+    <string name="yj_confirm_ok">开始绑定</string>
+    <string name="yj_binding_step">正在创建研究部文件夹并绑定…</string>
+    <string name="yj_agent_creating">已绑定，专属 Agent 创建中…（后台完成会通知研究部消息中心）</string>
+    <string name="yj_bind_done_agent">已绑定研究部「%1$s」，专属 Agent「%2$s」已就绪。</string>
+    <string name="yj_agent_creating_done">已绑定研究部「%1$s」。专属 Agent 仍在后台创建，稍后可点「研究部绑定…」查看结果（平台消息中心也会有通知）。</string>
+    <string name="yj_bind_unconfirmed">绑定已提交研究部「%1$s」，但状态暂未刷新出来；稍后点「研究部绑定…」查看结果。</string>
+    <string name="yj_bind_failed_title">绑定未完成</string>
+    <string name="yj_bind_failed">%1$s</string>
+    <string name="yj_bound_msg">研究部文件夹：%1$s\n专属 Agent：%2$s\n\n解绑请打开研究部网站操作。</string>
+    <string name="yj_agent_none">未创建</string>
+    <string name="yj_open_site">打开研究部</string>
+    <string name="yj_site_unavailable">没有可打开研究部网站的浏览器</string>
 </resources>

@@ -71,6 +71,10 @@ SHARE_DEFAULT_MAX_OPENS = 5  # 可打开次数默认5次（0=不限）
 MAX_SLICE_MS = 600 * 1000                  # 单次回听切片上限10分钟
 PWD_ALPHABET = "23456789ABCDEFGHJKMNPQRSTUVWXYZ"
 PWD_LENGTH = 20  # 分享提取码长度（链接内自动携带，手动输入仅作兜底）
+YJ_BASE = str(CFG.get("yanjiubu_base_url") or "https://yanjiubu.orientlaw.cn").rstrip("/")
+YJ_TOKEN = str(CFG.get("yanjiubu_bridge_token") or "").strip()
+YJ_TIMEOUT = float(CFG.get("yanjiubu_timeout") or 5)  # 列表页等待上限；平台不可达立即降级
+YJ_CACHE_TTL = 60.0  # 绑定清单进程内缓存（列表页徽标用；详情状态接口强制刷新）
 VP_AUTO_THRESHOLD = 0.72     # 高置信：直接标人名
 VP_TENTATIVE_THRESHOLD = 0.60  # 中置信：标"名字？"待确认
 VP_MAX_EMBEDDINGS = 5        # 每人滚动保留的声纹样本数
@@ -2575,6 +2579,83 @@ def _wxchat_pwd_ok(sh, pwd):
     return str(pwd or "").strip().upper() == str(sh["pwd"]).upper()
 
 
+# ---------------------------------------------------------------- 研究部桥接（2026-11-23）
+# 轻舟资料夹 ↔ 研究部文件夹：状态查询 + 一键「建同名夹（有则复用）→ 绑定 → 建夹专属 Agent」。
+# 平台侧接口见研究部仓库 src/app/api/lightboat-bridge/*（X-Bridge-Token 服务间鉴权）。
+_yj_cache = {"at": 0.0, "map": None}
+_yj_lock = threading.Lock()
+
+
+def yj_configured():
+    return bool(YJ_TOKEN)
+
+
+def _yj_headers():
+    return {"X-Bridge-Token": YJ_TOKEN, "Accept": "application/json"}
+
+
+def _yj_summary(b):
+    """平台绑定视角 → APP 紧凑摘要（只挑展示所需字段；多绑取平台排序的第一条）。"""
+    agent = b.get("agent") or None
+    return {
+        "bound": True,
+        "yj_folder_id": b.get("folder_id"),
+        "yj_folder_name": b.get("folder_name"),
+        "agent": None if not agent else {
+            "name": agent.get("name"),
+            "channel": agent.get("channel"),
+            "model": agent.get("model"),
+            "active": agent.get("is_active", True),
+        },
+        "last_verified_at": b.get("last_verified_at"),
+    }
+
+
+def yj_bindings_map(force=False):
+    """拉平台绑定清单（60 秒进程内缓存）。返回 (map, error)；平台不可达时回退旧缓存并带 error。
+
+    设计红线：研究部不可达绝不能拖垮资料夹列表/详情——一律降级为「未知」而非报错。
+    """
+    if not yj_configured():
+        return {}, "研究部桥接未配置（config.json 缺 yanjiubu_bridge_token）"
+    now = time.time()
+    with _yj_lock:
+        cached = _yj_cache["map"]
+        if not force and cached is not None and now - _yj_cache["at"] < YJ_CACHE_TTL:
+            return dict(cached), None
+    try:
+        r = requests.get(YJ_BASE + "/api/lightboat-bridge/bindings",
+                         headers=_yj_headers(), timeout=YJ_TIMEOUT)
+    except requests.RequestException as e:
+        with _yj_lock:
+            stale = dict(_yj_cache["map"]) if _yj_cache["map"] is not None else {}
+        return stale, "研究部桥接不可达：%s" % e
+    if r.status_code != 200:
+        with _yj_lock:
+            stale = dict(_yj_cache["map"]) if _yj_cache["map"] is not None else {}
+        return stale, "研究部桥接返回 HTTP %d" % r.status_code
+    try:
+        payload = r.json() or {}
+        data = payload.get("data") or {}
+        bindings = data.get("bindings") or []
+    except ValueError:
+        return {}, "研究部桥接返回不是 JSON"
+    m = {}
+    for b in bindings if isinstance(bindings, list) else []:
+        if not isinstance(b, dict):
+            continue
+        lid = str(b.get("lightboat_folder_id") or "").lower()
+        if not lid:
+            continue
+        if b.get("folder_deleted"):
+            continue
+        m.setdefault(lid, _yj_summary(b))
+    with _yj_lock:
+        _yj_cache["at"] = time.time()
+        _yj_cache["map"] = m
+    return dict(m), None
+
+
 # ---------------------------------------------------------------- 资料夹管理接口
 
 @app.get("/api/asr/folders")
@@ -2600,7 +2681,15 @@ def folder_list():
                       "items": [{"kind": it.get("kind"), "ref": str(it.get("ref") or "")}
                                 for it in all_items]})
     items.sort(key=lambda x: x.get("created_at") or 0, reverse=True)
-    return jsonify(folders=items)
+    yj_map, yj_err = ({}, None)
+    if yj_configured():
+        yj_map, yj_err = yj_bindings_map()
+    for it in items:
+        s = yj_map.get(str(it["folder_id"]).lower())
+        if s:
+            it["yj"] = s
+    return jsonify(folders=items,
+                   yanjiubu={"configured": yj_configured(), "ok": yj_err is None, "error": yj_err})
 
 
 @app.post("/api/asr/folders")
@@ -2808,6 +2897,57 @@ def folder_create_share(fid):
                    url="%s/%s?pwd=%s" % (SHARE_BASE, sid, pwd),
                    validity_hours=hours, max_opens=max_opens,
                    expires_at=share["expires_at"])
+
+
+@app.get("/api/asr/folders/<fid>/yanjiubu")
+def folder_yanjiubu_status(fid):
+    """资料夹 ↔ 研究部绑定状态（详情页「研究部绑定…」，强制刷新不走缓存）。"""
+    user = authenticate()
+    if user is None:
+        return jsonify(error="unauthorized"), 401
+    if _folder_owned(fid, user) is None:
+        return jsonify(error="not found"), 404
+    if not yj_configured():
+        return jsonify(configured=False, bound=False,
+                       error="研究部桥接未配置（服务端 config.json 缺 yanjiubu_bridge_token）")
+    m, err = yj_bindings_map(force=True)
+    summary = m.get(str(fid).lower())
+    return jsonify(configured=True, bound=bool(summary), binding=summary, platform_error=err)
+
+
+@app.post("/api/asr/folders/<fid>/yanjiubu/bind")
+def folder_yanjiubu_bind(fid):
+    """一键：研究部建同名文件夹（重名复用）→ 绑定 → 建夹专属 Agent（无则建，有则复用）。"""
+    user = authenticate()
+    if user is None:
+        return jsonify(error="unauthorized"), 401
+    fd = _folder_owned(fid, user)
+    if fd is None:
+        return jsonify(error="not found"), 404
+    if not yj_configured():
+        return jsonify(error="研究部桥接未配置（服务端 config.json 缺 yanjiubu_bridge_token）"), 400
+    try:
+        r = requests.post(YJ_BASE + "/api/lightboat-bridge/bind",
+                          json={"lightboat_folder_id": str(fid).lower()},
+                          headers=_yj_headers(), timeout=30)
+    except requests.RequestException as e:
+        return jsonify(error="研究部桥接不可达：%s" % e), 502
+    try:
+        payload = r.json() or {}
+    except ValueError:
+        payload = {}
+    if r.status_code != 200 or not payload.get("success"):
+        reason = payload.get("error") or ("HTTP %d" % r.status_code)
+        return jsonify(error="研究部一键绑定失败：%s" % reason), 502
+    data = payload.get("data") or {}
+    with _yj_lock:
+        _yj_cache["at"] = 0.0  # 绑定结果已变化，缓存立即失效
+    print("yanjiubu bind by", user, ":", fid, "->", data.get("folder"), flush=True)
+    return jsonify(ok=True,
+                   already_bound=bool(data.get("already_bound")),
+                   folder=data.get("folder"),
+                   binding=data.get("binding"),
+                   agent=data.get("agent"))
 
 
 @app.get("/api/asr/wxchat/list")

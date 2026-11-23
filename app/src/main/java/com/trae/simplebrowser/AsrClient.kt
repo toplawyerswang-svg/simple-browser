@@ -452,7 +452,39 @@ object AsrClient {
         val aliveCount: Int,
         val createdAt: Long,
         /** 成员明细（kind to ref）：APP 据此把已归档条目从根目录列表隐藏、挑选面板只列未归档。 */
-        val items: List<Pair<String, String>> = emptyList()
+        val items: List<Pair<String, String>> = emptyList(),
+        /** 研究部绑定摘要（未配置/未接线时为 null；列表徽标用） */
+        val yj: YanjiubuBinding? = null
+    )
+
+    /** 研究部侧的绑定视角（asrsvc 归一后的紧凑字段）。 */
+    data class YanjiubuBinding(
+        val yjFolderId: String,
+        val yjFolderName: String,
+        val agentName: String?,
+        val agentChannel: String?,
+        val agentModel: String?,
+        val agentActive: Boolean
+    )
+
+    /** 研究部绑定状态（详情页「研究部绑定…」）。 */
+    data class YanjiubuStatus(
+        val configured: Boolean,
+        val bound: Boolean,
+        val binding: YanjiubuBinding?,
+        /** 平台不可达时为错误文案（绑定状态未知，不等于未绑定） */
+        val platformError: String?,
+        /** 桥接未配置等服务端原因 */
+        val error: String?
+    )
+
+    /** 一键绑定结果（agentState: exists=已就绪 / creating=后台创建中 / failed）。 */
+    data class YanjiubuBindResult(
+        val ok: Boolean,
+        val alreadyBound: Boolean,
+        val folderName: String?,
+        val agentState: String?,
+        val agentName: String?
     )
 
     /** 文件夹成员：kind=task（录音转写）/ wxchat（聊天记录分享）；失效条目 alive=false。
@@ -487,7 +519,80 @@ object AsrClient {
             itemCount = j.optInt("item_count", 0),
             aliveCount = j.optInt("alive_count", 0),
             createdAt = j.optLong("created_at", 0L),
-            items = members
+            items = members,
+            yj = j.optJSONObject("yj")?.let(::parseYjBinding)
+        )
+    }
+
+    /** 解析 asrsvc 归一后的研究部绑定摘要（字段缺失一律当 null，不猜测）。 */
+    private fun parseYjBinding(j: JSONObject): YanjiubuBinding {
+        val agent = j.optJSONObject("agent")
+        return YanjiubuBinding(
+            yjFolderId = j.optString("yj_folder_id"),
+            yjFolderName = j.optString("yj_folder_name", "未命名文件夹"),
+            agentName = agent?.optString("name")?.ifEmpty { null },
+            agentChannel = agent?.optString("channel")?.ifEmpty { null },
+            agentModel = agent?.optString("model")?.ifEmpty { null },
+            agentActive = agent?.optBoolean("active", true) ?: true
+        )
+    }
+
+    /** 研究部桥接接口的错误体是 {"error": "..."}——取出人话，别再让用户看整段 JSON。 */
+    private fun checkCodeReadable(code: Int, body: String) {
+        if (code == 401) throw AsrAuthException()
+        if (code !in 200..299) {
+            val msg = try {
+                JSONObject(body).optString("error").ifEmpty { null }
+            } catch (_: Exception) {
+                null
+            }
+            throw IllegalStateException(msg ?: "服务器返回 $code")
+        }
+    }
+
+    /** 资料夹 ↔ 研究部绑定状态（强制刷新，详情页用）。 */
+    fun folderYanjiubuStatus(context: Context, folderId: String): YanjiubuStatus {
+        val conn = connection(context, "$BASE_URL/folders/$folderId/yanjiubu")
+        val code = conn.responseCode
+        val body = readBody(conn, code)
+        checkCodeReadable(code, body)
+        val j = JSONObject(body)
+        return YanjiubuStatus(
+            configured = j.optBoolean("configured", false),
+            bound = j.optBoolean("bound", false),
+            binding = j.optJSONObject("binding")?.let(::parseYjBinding),
+            platformError = j.optString("platform_error").ifEmpty { null },
+            error = j.optString("error").ifEmpty { null }
+        )
+    }
+
+    /**
+     * 一键绑定：研究部建同名文件夹（重名复用）→ 绑定 → 建夹专属 Agent（无则建/有则复用）。
+     * 同步段（建夹+绑定+源端校验）通常数秒；Agent 创建在平台后台完成（约 30 秒），
+     * 返回 agentState=creating 时由界面轮询状态。
+     */
+    fun bindFolderYanjiubu(context: Context, folderId: String): YanjiubuBindResult {
+        val conn = (URL("$BASE_URL/folders/$folderId/yanjiubu/bind").openConnection() as HttpURLConnection).apply {
+            requestMethod = "POST"
+            connectTimeout = 15000
+            readTimeout = 45000
+            doOutput = true
+            setRequestProperty("X-LZ-Token", token(context))
+            setRequestProperty("Content-Type", "application/json")
+        }
+        conn.outputStream.use { it.write("{}".toByteArray(Charsets.UTF_8)) }
+        val code = conn.responseCode
+        val body = readBody(conn, code)
+        checkCodeReadable(code, body)
+        val j = JSONObject(body)
+        val folder = j.optJSONObject("folder")
+        val agent = j.optJSONObject("agent")
+        return YanjiubuBindResult(
+            ok = j.optBoolean("ok", false),
+            alreadyBound = j.optBoolean("already_bound", false),
+            folderName = folder?.optString("name")?.ifEmpty { null },
+            agentState = agent?.optString("state")?.ifEmpty { null },
+            agentName = agent?.optJSONObject("agent")?.optString("name")?.ifEmpty { null }
         )
     }
 

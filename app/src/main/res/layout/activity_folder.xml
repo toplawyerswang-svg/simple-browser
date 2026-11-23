@@ -86,6 +86,23 @@
                 android:contentDescription="@string/folder_create_title" />
         </LinearLayout>
 
+        <!-- 研究部绑定信息条：仅详情态显示（已绑定/未绑定/状态未知一眼可见） -->
+        <TextView
+            android:id="@+id/tv_yj_status"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:paddingStart="16dp"
+            android:paddingEnd="16dp"
+            android:paddingTop="8dp"
+            android:paddingBottom="8dp"
+            android:background="#F0F4FA"
+            android:textSize="12sp"
+            android:textColor="#5F6368"
+            android:maxLines="2"
+            android:ellipsize="end"
+            android:visibility="gone"
+            android:text="@string/yj_status_checking" />
+
         <!-- 关键词搜索：仅列表态显示（按文件夹名过滤） -->
         <EditText
             android:id="@+id/folder_search_input"
