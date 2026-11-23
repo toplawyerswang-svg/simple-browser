@@ -589,3 +589,12 @@
 | APP 侧   | AsrClient：`YanjiubuBinding/YanjiubuStatus/YanjiubuBindResult` + `folderYanjiubuStatus`/`bindFolderYanjiubu` + listFolders 解析 `yj`；FolderActivity：详情信息条（已绑定「研究部文件夹 + Agent（通道）」/未绑定/未知/未配置）+「⋯」菜单「研究部绑定…」（状态详情→打开研究部；未绑定→确认→进度轮询 90 秒→结果弹窗）+ 列表「研究部」蓝色小徽标（仅已绑定显示） |
 | 验证    | 平台 `tsc` 过（仅并行会话既有 notice-bell 错误）；桥接 HTTP 实测：无/错令牌 401、非法 id 400、真实已绑定夹状态与幂等绑定通过、不存在夹错误链路 404 正确；平台回归子集 **10/10 套件全绿**（含新 `lightboat-bridge.test.mts` 28 例、`folder-agent.test.mjs` 58、`folder-external-bindings.test.mjs` 65）；asrsvc 本地实例端到端：列表 yj 摘要/已绑定与未绑定状态/平台不可达降级（列表 200+platform_error）全过；`assembleRelease` v1.22.0/69 构建过 |
 | 未验证  | **真机 UI 实测未做**（手机未接 USB、无线 ADB 不在线）；**一键写入正路未在本地跑**（本地 dev 连生产库，绑定会触发真实 RAGFlow 纳编造测试数据，故留到部署后生产用真实资料夹验收）。部署后核对：资料夹详情页「⋯」→ 研究部绑定… →（未绑定）开始绑定 → 进度条 90 秒内出现「已绑定 + Agent」→ 返回列表见「研究部」徽标；研究部网页端核对同名文件夹/绑定/Agent（扣子 · Deepseek-V4.1-Flash）三件齐 |
+
+### F-46 修复「研究部绑定…」弹「查询失败：null」
+
+| 项目    | 内容                                                                                                                                                                                                                          |
+| ----- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 缺陷    | 2026-11-23 真机点资料夹「⋯」→「研究部绑定…」，弹「查询失败：null」（任何资料夹都必现）                                                                                                                                                                     |
+| 根因    | Android `org.json` 的坑：服务端 JSON 里**显式 null** 经 `optString("platform_error")` 返回的是字符串 `"null"`（不是空串），`ifEmpty { null }` 过不了——状态接口一切正常（`platform_error:null`）也被误判成「平台不可达」。同一坑也影响 error/agent 名字段（潜在） |
+| 修复    | AsrClient 新增 `optStringOrNull(j,key)`：先 `isNull(key)` 判定（缺失或 JSON null 一律 null），再 optString/ifEmpty；统一替换 `platform_error`、`error`、绑定摘要 agent 的 name/channel/model、一键绑定结果字段、资料夹条目 error（顺带修既有潜在坑） |
+| 验证    | 生产状态接口实测返回 `platform_error: null` 与绑定详情（王培华夹 bound=true）；修复后 null 不再触发错误分支，走「已绑定→详情 / 未绑定→确认」正路；v1.22.1/70 assembleRelease 构建过；待用户 APP 内更新后再点按确认 |

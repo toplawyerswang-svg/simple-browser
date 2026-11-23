@@ -524,15 +524,25 @@ object AsrClient {
         )
     }
 
-    /** 解析 asrsvc 归一后的研究部绑定摘要（字段缺失一律当 null，不猜测）。 */
+    /**
+     * Android org.json 的坑（2026-11-23 生产实测「查询失败：null」根因）：
+     * 服务端 JSON 里显式的 null，经 optString() 会返回字符串 "null"，不是空串——
+     * 直接 ifEmpty 判定会把「一切正常」误判成「平台错误」。本助手把缺失/JSON null 统一为 null。
+     */
+    private fun optStringOrNull(j: JSONObject, key: String): String? {
+        if (j.isNull(key)) return null
+        return j.optString(key).ifEmpty { null }
+    }
+
+    /** 解析 asrsvc 归一后的研究部绑定摘要（字段缺失/JSON null 一律当 null，不猜测）。 */
     private fun parseYjBinding(j: JSONObject): YanjiubuBinding {
         val agent = j.optJSONObject("agent")
         return YanjiubuBinding(
             yjFolderId = j.optString("yj_folder_id"),
             yjFolderName = j.optString("yj_folder_name", "未命名文件夹"),
-            agentName = agent?.optString("name")?.ifEmpty { null },
-            agentChannel = agent?.optString("channel")?.ifEmpty { null },
-            agentModel = agent?.optString("model")?.ifEmpty { null },
+            agentName = agent?.let { optStringOrNull(it, "name") },
+            agentChannel = agent?.let { optStringOrNull(it, "channel") },
+            agentModel = agent?.let { optStringOrNull(it, "model") },
             agentActive = agent?.optBoolean("active", true) ?: true
         )
     }
@@ -542,7 +552,7 @@ object AsrClient {
         if (code == 401) throw AsrAuthException()
         if (code !in 200..299) {
             val msg = try {
-                JSONObject(body).optString("error").ifEmpty { null }
+                optStringOrNull(JSONObject(body), "error")
             } catch (_: Exception) {
                 null
             }
@@ -561,8 +571,8 @@ object AsrClient {
             configured = j.optBoolean("configured", false),
             bound = j.optBoolean("bound", false),
             binding = j.optJSONObject("binding")?.let(::parseYjBinding),
-            platformError = j.optString("platform_error").ifEmpty { null },
-            error = j.optString("error").ifEmpty { null }
+            platformError = optStringOrNull(j, "platform_error"),
+            error = optStringOrNull(j, "error")
         )
     }
 
@@ -590,9 +600,9 @@ object AsrClient {
         return YanjiubuBindResult(
             ok = j.optBoolean("ok", false),
             alreadyBound = j.optBoolean("already_bound", false),
-            folderName = folder?.optString("name")?.ifEmpty { null },
-            agentState = agent?.optString("state")?.ifEmpty { null },
-            agentName = agent?.optJSONObject("agent")?.optString("name")?.ifEmpty { null }
+            folderName = folder?.let { optStringOrNull(it, "name") },
+            agentState = agent?.let { optStringOrNull(it, "state") },
+            agentName = agent?.optJSONObject("agent")?.let { optStringOrNull(it, "name") }
         )
     }
 
@@ -644,7 +654,7 @@ object AsrClient {
                     title = o.optString("title", "未命名"),
                     meta = o.optString("meta"),
                     alive = o.optBoolean("alive", false),
-                    error = o.optString("error").ifEmpty { null },
+                    error = optStringOrNull(o, "error"),
                     url = o.optString("url")
                 ))
             }
