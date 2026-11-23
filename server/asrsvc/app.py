@@ -3143,6 +3143,7 @@ h1{font-size:19px;color:#111;margin-bottom:6px;word-break:break-all}
 .bubble{position:relative;background:#fff;border-radius:4px;padding:9px 12px;font-size:15px;color:#111;line-height:1.5;white-space:pre-wrap;word-break:break-word;display:inline-block}
 .bubble:before{content:'';position:absolute;left:-5px;top:12px;width:10px;height:10px;background:#fff;transform:rotate(45deg);border-radius:2px}
 .bubble.tagonly{color:#666}
+.voicenote{margin-top:6px;font-size:12px;color:#8a8a8a;line-height:1.4}
 .fcard{display:flex;align-items:center;gap:10px;text-decoration:none;color:#111;min-width:200px}
 .ficon{flex:none;width:38px;height:38px;border-radius:4px;background:#5b7bd5;color:#fff;font-size:18px;line-height:38px;text-align:center}
 .fname{font-size:14px;word-break:break-all;max-width:230px}
@@ -3241,7 +3242,7 @@ function renderRecord(text){
   }
   return h+'</div>';
 }
-var cmap={},ci=0;
+var cmap={},ci=0,vnoted=0;
 for(var i=0;i<CHAT.messages.length;i++){var s=CHAT.messages[i].sender;if(!(s in cmap))cmap[s]=ci++;}
 var h="";
 for(var i=0;i<CHAT.messages.length;i++){
@@ -3263,7 +3264,8 @@ for(var i=0;i<CHAT.messages.length;i++){
     var vsrc=m.att!=null?'/s/'+SID+'/file/'+m.att+'?pwd='+encodeURIComponent(PWD):"";
     inner=vsrc?'<video class="pic" src="'+vsrc+'" controls preload="metadata"></video>':'<span class="tagonly">[视频]</span>';
   }else if(m.type==="voice"){
-    inner='<span class="tagonly">[语音]</span>';
+    inner='<span class="tagonly">'+esc(m.text||"[语音]")+'</span>';
+    if(!vnoted){vnoted=1;inner+='<div class="voicenote">微信分享包不含语音音频，此条无法转写；如需文字版，请在微信中长按该条语音选「转文字」</div>';}
   }else if(isRec){inner=renderRecord(m.text||"");}
   else{inner=esc(m.text);}
   var ocrExtra="";
