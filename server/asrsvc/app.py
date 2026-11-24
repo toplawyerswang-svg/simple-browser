@@ -75,6 +75,8 @@ YJ_BASE = str(CFG.get("yanjiubu_base_url") or "https://yanjiubu.orientlaw.cn").r
 YJ_TOKEN = str(CFG.get("yanjiubu_bridge_token") or "").strip()
 YJ_TIMEOUT = float(CFG.get("yanjiubu_timeout") or 5)  # 列表页等待上限；平台不可达立即降级
 YJ_CACHE_TTL = 60.0  # 绑定清单进程内缓存（列表页徽标用；详情状态接口强制刷新）
+# 开场文字上限：与研究部消息正文上限（CHAT_MESSAGE_MAX_CHARS=6000）同口径，超长即拒（不静默截断）
+YJ_INITIAL_MESSAGE_MAX_CHARS = 6000
 VP_AUTO_THRESHOLD = 0.72     # 高置信：直接标人名
 VP_TENTATIVE_THRESHOLD = 0.60  # 中置信：标"名字？"待确认
 VP_MAX_EMBEDDINGS = 5        # 每人滚动保留的声纹样本数
@@ -2917,7 +2919,12 @@ def folder_yanjiubu_status(fid):
 
 @app.post("/api/asr/folders/<fid>/yanjiubu/bind")
 def folder_yanjiubu_bind(fid):
-    """一键：研究部建同名文件夹（重名复用）→ 绑定 → 建夹专属 Agent（无则建，有则复用）。"""
+    """一键：研究部建同名文件夹（重名复用）→ 绑定 → 建夹专属 Agent（无则建，有则复用）。
+
+    可选 body 字段 initial_message（2026-11-24 用户需求）：用户在绑定弹窗里填的开场文字。
+    研究部侧会在 Agent 建好、默认技能确认装完后自动把这段文字发给它（后台编排，
+    不拖慢本接口）；成功/失败都写研究部消息中心 + 发送历史，不会静默丢字。
+    """
     user = authenticate()
     if user is None:
         return jsonify(error="unauthorized"), 401
@@ -2926,9 +2933,20 @@ def folder_yanjiubu_bind(fid):
         return jsonify(error="not found"), 404
     if not yj_configured():
         return jsonify(error="研究部桥接未配置（服务端 config.json 缺 yanjiubu_bridge_token）"), 400
+    j = request.get_json(silent=True) or {}
+    raw_msg = j.get("initial_message")
+    if raw_msg is not None and not isinstance(raw_msg, str):
+        return jsonify(error="initial_message 必须是字符串"), 400
+    initial_message = (raw_msg or "").strip()
+    if len(initial_message) > YJ_INITIAL_MESSAGE_MAX_CHARS:
+        return jsonify(error="开场文字不能超过 %d 字（当前 %d 字）"
+                       % (YJ_INITIAL_MESSAGE_MAX_CHARS, len(initial_message))), 400
+    payload_in = {"lightboat_folder_id": str(fid).lower()}
+    if initial_message:
+        payload_in["initial_message"] = initial_message
     try:
         r = requests.post(YJ_BASE + "/api/lightboat-bridge/bind",
-                          json={"lightboat_folder_id": str(fid).lower()},
+                          json=payload_in,
                           headers=_yj_headers(), timeout=30)
     except requests.RequestException as e:
         return jsonify(error="研究部桥接不可达：%s" % e), 502
@@ -2942,12 +2960,14 @@ def folder_yanjiubu_bind(fid):
     data = payload.get("data") or {}
     with _yj_lock:
         _yj_cache["at"] = 0.0  # 绑定结果已变化，缓存立即失效
-    print("yanjiubu bind by", user, ":", fid, "->", data.get("folder"), flush=True)
+    print("yanjiubu bind by", user, ":", fid, "->", data.get("folder"),
+          "| initial_message_chars=", len(initial_message), flush=True)
     return jsonify(ok=True,
                    already_bound=bool(data.get("already_bound")),
                    folder=data.get("folder"),
                    binding=data.get("binding"),
-                   agent=data.get("agent"))
+                   agent=data.get("agent"),
+                   initial_message=data.get("initial_message"))
 
 
 @app.get("/api/asr/wxchat/list")

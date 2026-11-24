@@ -82,6 +82,20 @@
 - **部署留痕**：本地 `server/asrsvc/app.py` 与服务器一致（改动前备份 `/opt/asrsvc/app.py.bak-folder-20261011`）；
   APP 侧 v1.15.0/47 已装机（设置页两页签入口行 + FolderActivity）。
 
+## 研究部桥接（v1.22.x+，2026-11-23 起；`/api/asr/folders/<fid>/yanjiubu*`）
+
+- `GET .../yanjiubu`：绑定状态（configured/bound/binding/platform_error），强制刷新不走缓存。
+- `POST .../yanjiubu/bind`：一键「研究部建同名夹（重名复用）→ 绑定 → 建夹专属 Agent」；
+  可选 body `initial_message`（2026-11-24）= 用户在 APP 绑定弹窗里填的开场文字：
+  - 非字符串 → 400、去首尾空白后 > `YJ_INITIAL_MESSAGE_MAX_CHARS`(6000) → 400，
+    **两种情况都不请求研究部**（零副作用）；纯空白等同不填。
+  - 合法则随请求转发给研究部；研究部在专属 Agent 建好、默认技能确认安装后自动发给它
+    （后台编排，不拖慢本接口），成功/失败写研究部消息中心与「给专属Agent发消息」历史。
+  - 响应带 `initial_message:{scheduled,chars}`（APP 据此决定是否承诺「会自动发送」）。
+- config.json：`yanjiubu_base_url` / `yanjiubu_bridge_token`（桥接令牌，逗号分隔可轮换）/
+  `yanjiubu_timeout`（列表页等待上限，默认 5s）；平台不可达一律降级「状态未知」，不拖垮资料夹。
+- 回归：`python test_yanjiubu_initial_message.py`（沙箱 + 本地桩平台，22 例，无需外网/密钥）。
+
 ## 部署状态（2026-09-29 已上线）
 
 - **已部署**：生产 asrsvc 已切 v3 分流版（备份 `/root/asrsvc-app-backup-20260929.py`；

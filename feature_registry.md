@@ -598,3 +598,15 @@
 | 根因    | Android `org.json` 的坑：服务端 JSON 里**显式 null** 经 `optString("platform_error")` 返回的是字符串 `"null"`（不是空串），`ifEmpty { null }` 过不了——状态接口一切正常（`platform_error:null`）也被误判成「平台不可达」。同一坑也影响 error/agent 名字段（潜在） |
 | 修复    | AsrClient 新增 `optStringOrNull(j,key)`：先 `isNull(key)` 判定（缺失或 JSON null 一律 null），再 optString/ifEmpty；统一替换 `platform_error`、`error`、绑定摘要 agent 的 name/channel/model、一键绑定结果字段、资料夹条目 error（顺带修既有潜在坑） |
 | 验证    | 生产状态接口实测返回 `platform_error: null` 与绑定详情（王培华夹 bound=true）；修复后 null 不再触发错误分支，走「已绑定→详情 / 未绑定→确认」正路；v1.22.1/70 assembleRelease 构建过；待用户 APP 内更新后再点按确认 |
+
+### F-47 绑定弹窗「开场文字」→ Agent 建好且技能装完自动发它
+
+| 项目    | 内容                                                                                                                                                                                                                          |
+| ----- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 需求    | 2026-11-24 用户提出（配截图）：在「绑定研究部」确认弹窗里加一个输入框，用户可输入一段文字；研究部在**文件夹专属 Agent 创建且技能安装完毕以后**，把这段文字自动发送给该 Agent |
+| 口径决策 | ① 可留空（空白=不发，不报错）；②「技能安装完毕」按真回执判定——coze= `skill_install_requests` 全部 acked，openclaw= `agents.skill_state` 带版本；有界等待 5 分钟，超时**仍发**但在通知与历史 detail 里写 `skills_ready:false`（不粉饰）；③ 10 分钟内同夹同内容的重复请求不重发（防 APP 超时重试导致 Agent 重复干活）；④ 发送复用 2026-11-24 上线的 `sendFolderAgentMessage`（folder_agent_messages 历史 + coze 台账 + 审计），detail 带 `initial_message:true / via:'lightboat-bridge'` |
+| 研究部服务端 | 新增 `src/lib/folder-agent-kickoff-shared.ts`（纯：入参归一 + 就绪判定）与 `folder-agent-kickoff.ts`（后台编排：等 Agent 落库→等技能回执→投递→写消息中心通知，失败也写）；`/api/lightboat-bridge/bind` 新增可选 `initial_message`（副作用前校验：非字符串/超 6000 字直接 400，不建夹不绑），响应带 `initial_message:{scheduled,chars}`；`sendFolderAgentMessage` 增加可选 `opts`（subject/retry/detailExtra，缺省行为逐字不变）；`AuditAction` 增 `folder.agent.initial_message` |
+| asrsvc 服务端 | `POST /api/asr/folders/<fid>/yanjiubu/bind` 接收 body `initial_message`：非字符串 400、超 `YJ_INITIAL_MESSAGE_MAX_CHARS=6000` 400（**均不请求研究部**）、纯空白等同不填；转发给研究部并回传其 `initial_message` 状态 |
+| APP 侧   | `FolderActivity.confirmBindYanjiubu` 改为自定义弹窗：说明文字 + 多行输入框（3~6 行、实时字数 n/6000、超限变红且不关窗）+ 去向说明；`AsrClient.bindFolderYanjiubu(…, initialMessage)` 传 `initial_message`、解析 `initial_message.scheduled`；绑定结果弹窗按「服务端已确认排入 / 未确认」两种口径分别如实提示；版本 v1.23.0/71 |
+| 验证    | 研究部纯函数回归 `scripts/debug/folder-agent-kickoff.test.mts` **22/22**；平台 `tsc --noEmit` 通过；既有「发消息」HTTP 套件复跑 **31/31**（证明 `sendFolderAgentMessage` 改动零回归）；asrsvc 转发回归 `test_yanjiubu_initial_message.py` **22/22**（桩平台记录请求体：转发/不转发/超长与错令牌均不产生副作用）；`assembleRelease` v1.23.0/71 构建通过 |
+| 未验证  | ①**真机 UI 未实测**（adb 无设备在线）；②**平台 DB 正路未在本地跑**（dev 连生产库，绑定/开场文字会写真实文件夹、历史行与消息中心通知，留给部署后生产验收）；③coze Agent 实际 ack 时长未知（写入 5 分钟兜底）；④进程重启会丢在途等待（后台 Promise 不持久化），补救=研究部网页端「给专属Agent发消息」重发。部署后核对：资料夹详情「⋯」→研究部绑定…→（未绑定）填几字→开始绑定→弹窗出现「开场文字会在 Agent 建好、技能确认安装后自动发给它」→研究部消息中心收到「轻舟开场文字已发给专属 Agent」→该夹「给专属Agent发消息」历史里出现这条正文（detail.initial_message=true）；扣子会话里 Agent 确认收到 |

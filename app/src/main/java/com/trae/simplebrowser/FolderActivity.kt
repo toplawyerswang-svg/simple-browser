@@ -318,17 +318,95 @@ class FolderActivity : AppCompatActivity() {
         }
     }
 
+    /**
+     * 绑定确认弹窗（2026-11-24 增补开场文字输入框）：
+     * 上半是原有说明，下半是一个多行输入框——用户可给这个文件夹的专属 Agent 留一句话，
+     * 研究部会在 Agent 建好、默认技能确认安装后自动发过去（可留空）。
+     */
     private fun confirmBindYanjiubu() {
         val d = detail ?: return
-        AlertDialog.Builder(this)
+        val px = { v: Int -> dp(v) }
+        val container = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(px(20), px(10), px(20), 0)
+        }
+        container.addView(TextView(this).apply {
+            text = getString(R.string.yj_confirm_msg, d.name)
+            textSize = 13.5f
+            setTextColor(0xFF444444.toInt())
+        })
+        container.addView(TextView(this).apply {
+            text = getString(R.string.yj_initial_title)
+            textSize = 14f
+            setTextColor(0xFF1A1A1A.toInt())
+            setPadding(0, px(14), 0, px(4))
+        })
+        val input = EditText(this).apply {
+            hint = getString(R.string.yj_initial_hint)
+            textSize = 14f
+            gravity = android.view.Gravity.TOP or android.view.Gravity.START
+            minLines = 3
+            maxLines = 6
+            setTextColor(0xFF1A1A1A.toInt())
+            setHintTextColor(0xFF9AA0A6.toInt())
+            inputType = android.text.InputType.TYPE_CLASS_TEXT or
+                android.text.InputType.TYPE_TEXT_FLAG_MULTI_LINE or
+                android.text.InputType.TYPE_TEXT_FLAG_CAP_SENTENCES
+        }
+        container.addView(input)
+        val counter = TextView(this).apply {
+            textSize = 12f
+            setTextColor(0xFF9AA0A6.toInt())
+            setPadding(0, px(4), 0, 0)
+        }
+        fun renderCounter() {
+            val n = input.text.toString().trim().length
+            counter.text = getString(
+                R.string.yj_initial_counter, n, AsrClient.YJ_INITIAL_MESSAGE_MAX_CHARS)
+            counter.setTextColor(
+                if (n > AsrClient.YJ_INITIAL_MESSAGE_MAX_CHARS) 0xFFD93025.toInt()
+                else 0xFF9AA0A6.toInt())
+        }
+        renderCounter()
+        container.addView(counter)
+        container.addView(TextView(this).apply {
+            text = getString(R.string.yj_initial_note)
+            textSize = 12f
+            setTextColor(0xFF666666.toInt())
+            setPadding(0, px(8), 0, 0)
+        })
+        input.addTextChangedListener(object : android.text.TextWatcher {
+            override fun beforeTextChanged(s: CharSequence?, a: Int, b: Int, c: Int) {}
+            override fun onTextChanged(s: CharSequence?, a: Int, b: Int, c: Int) {}
+            override fun afterTextChanged(s: android.text.Editable?) = renderCounter()
+        })
+        val dialog = AlertDialog.Builder(this)
             .setTitle(R.string.yj_confirm_title)
-            .setMessage(getString(R.string.yj_confirm_msg, d.name))
-            .setPositiveButton(R.string.yj_confirm_ok) { _, _ -> startYanjiubuBind(d.folderId) }
+            .setView(android.widget.ScrollView(this).apply {
+                addView(container)
+                setPadding(0, 0, 0, 0)
+                isFillViewport = false
+            })
             .setNegativeButton(android.R.string.cancel, null)
-            .show()
+            .setPositiveButton(R.string.yj_confirm_ok, null)
+            .create()
+        // 超长不静默截断、也不直接关窗：提示后留在输入框里让用户自己删
+        dialog.setOnShowListener {
+            dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener {
+                val text = input.text.toString().trim()
+                if (text.length > AsrClient.YJ_INITIAL_MESSAGE_MAX_CHARS) {
+                    toast(getString(
+                        R.string.yj_initial_too_long, AsrClient.YJ_INITIAL_MESSAGE_MAX_CHARS, text.length))
+                    return@setOnClickListener
+                }
+                dialog.dismiss()
+                startYanjiubuBind(d.folderId, text.ifEmpty { null })
+            }
+        }
+        dialog.show()
     }
 
-    private fun startYanjiubuBind(folderId: String) {
+    private fun startYanjiubuBind(folderId: String, initialMessage: String? = null) {
         val progress = AlertDialog.Builder(this)
             .setTitle(R.string.yj_confirm_title)
             .setMessage(R.string.yj_binding_step)
@@ -336,11 +414,12 @@ class FolderActivity : AppCompatActivity() {
             .show()
         Thread {
             try {
-                val r = AsrClient.bindFolderYanjiubu(this, folderId)
+                val r = AsrClient.bindFolderYanjiubu(this, folderId, initialMessage)
                 runOnUiThread {
                     if (isFinishing || isDestroyed) return@runOnUiThread
                     progress.setMessage(getString(R.string.yj_agent_creating))
-                    pollYanjiubuBind(folderId, progress)
+                    // 服务端确认排入投递才承诺「会自动发」；未确认就如实提示（可能是旧服务端）
+                    pollYanjiubuBind(folderId, progress, initialMessage, r.initialMessageScheduled)
                 }
             } catch (e: Exception) {
                 runOnUiThread {
@@ -349,7 +428,9 @@ class FolderActivity : AppCompatActivity() {
                     AlertDialog.Builder(this)
                         .setTitle(R.string.yj_bind_failed_title)
                         .setMessage(getString(R.string.yj_bind_failed, errText(e)))
-                        .setPositiveButton(R.string.yj_retry) { _, _ -> startYanjiubuBind(folderId) }
+                        .setPositiveButton(R.string.yj_retry) { _, _ ->
+                            startYanjiubuBind(folderId, initialMessage)
+                        }
                         .setNegativeButton(android.R.string.cancel, null)
                         .show()
                 }
@@ -358,12 +439,23 @@ class FolderActivity : AppCompatActivity() {
     }
 
     /** 绑定已落库、Agent 后台创建中：3 秒一轮最多 90 秒；到点未就绪如实提示「后台创建中」。 */
-    private fun pollYanjiubuBind(folderId: String, progress: AlertDialog) {
+    private fun pollYanjiubuBind(
+        folderId: String,
+        progress: AlertDialog,
+        initialMessage: String? = null,
+        kickoffScheduled: Boolean = false
+    ) {
         if (yjPolling) {
             progress.dismiss()
             return
         }
         yjPolling = true
+        // 用户填了开场文字就如实交代它的去向（研究部后台排队发送，不在本次轮询窗口内出结果）
+        val kickoffNote = when {
+            initialMessage.isNullOrBlank() -> ""
+            kickoffScheduled -> getString(R.string.yj_kickoff_scheduled, initialMessage.length)
+            else -> getString(R.string.yj_kickoff_unconfirmed)
+        }
         Thread {
             val deadline = System.currentTimeMillis() + 90_000
             var last: AsrClient.YanjiubuStatus? = null
@@ -399,15 +491,15 @@ class FolderActivity : AppCompatActivity() {
                 when {
                     !agent.isNullOrBlank() -> showYjMessage(
                         getString(R.string.yj_bound_title),
-                        getString(R.string.yj_bind_done_agent, name, agent)
+                        getString(R.string.yj_bind_done_agent, name, agent) + kickoffNote
                     )
                     b != null -> showYjMessage(
                         getString(R.string.yj_bound_title),
-                        getString(R.string.yj_agent_creating_done, name)
+                        getString(R.string.yj_agent_creating_done, name) + kickoffNote
                     )
                     else -> showYjMessage(
                         getString(R.string.yj_bound_title),
-                        getString(R.string.yj_bind_unconfirmed, name)
+                        getString(R.string.yj_bind_unconfirmed, name) + kickoffNote
                     )
                 }
                 loadYanjiubuStatus()
@@ -1116,6 +1208,10 @@ class FolderActivity : AppCompatActivity() {
 
     private fun toast(resId: Int) {
         Toast.makeText(this, resId, Toast.LENGTH_SHORT).show()
+    }
+
+    private fun toast(text: String) {
+        Toast.makeText(this, text, Toast.LENGTH_LONG).show()
     }
 
     private fun errText(e: Exception): String =

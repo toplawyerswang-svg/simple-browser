@@ -499,6 +499,14 @@
     <string name="yj_confirm_title">绑定研究部</string>
     <string name="yj_confirm_msg">将在研究部创建同名文件夹「%1$s」并绑定；若该文件夹尚无专属 Agent，会自动创建一个（扣子通道 · Deepseek-V4.1-Flash，后台约 30 秒）。\n\n研究部已有同名文件夹则直接复用，不会重复创建。</string>
     <string name="yj_confirm_ok">开始绑定</string>
+    <!-- 开场文字（2026-11-24 用户需求）：绑定弹窗里的输入框，Agent 建好且技能装好后自动发对话 -->
+    <string name="yj_initial_title">开场文字（可不填）</string>
+    <string name="yj_initial_hint">给这个文件夹的专属 Agent 留一句话，比如让它先做什么</string>
+    <string name="yj_initial_note">专属 Agent 建好、默认技能确认安装完成后，这段文字会自动发给它；结果可在研究部消息中心与「给专属Agent发消息」历史里查。</string>
+    <string name="yj_initial_counter">%1$d/%2$d</string>
+    <string name="yj_initial_too_long">开场文字不能超过 %1$d 字（当前 %2$d 字）</string>
+    <string name="yj_kickoff_scheduled">\n\n你填写的开场文字（%1$d 字）会在专属 Agent 建好、技能确认安装后自动发给它。</string>
+    <string name="yj_kickoff_unconfirmed">\n\n注意：服务端没有确认收到开场文字（可能是服务端版本较旧），若 Agent 迟迟没收到，请在研究部网页端「给专属Agent发消息」手动发送。</string>
     <string name="yj_binding_step">正在创建研究部文件夹并绑定…</string>
     <string name="yj_agent_creating">已绑定，专属 Agent 创建中…（后台完成会通知研究部消息中心）</string>
     <string name="yj_bind_done_agent">已绑定研究部「%1$s」，专属 Agent「%2$s」已就绪。</string>

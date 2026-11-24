@@ -484,8 +484,13 @@ object AsrClient {
         val alreadyBound: Boolean,
         val folderName: String?,
         val agentState: String?,
-        val agentName: String?
+        val agentName: String?,
+        /** 开场文字是否已排入研究部后台投递（用户没填时为 false） */
+        val initialMessageScheduled: Boolean = false
     )
+
+    /** 开场文字上限（与研究部消息正文上限、asrsvc 校验一致；超长由服务端拒绝，客户端提前拦） */
+    const val YJ_INITIAL_MESSAGE_MAX_CHARS = 6000
 
     /** 文件夹成员：kind=task（录音转写）/ wxchat（聊天记录分享）；失效条目 alive=false。
      *  wxchat 条目附带 url（带提取码的分享链接，供点开预览），task 条目为空串。 */
@@ -580,8 +585,15 @@ object AsrClient {
      * 一键绑定：研究部建同名文件夹（重名复用）→ 绑定 → 建夹专属 Agent（无则建/有则复用）。
      * 同步段（建夹+绑定+源端校验）通常数秒；Agent 创建在平台后台完成（约 30 秒），
      * 返回 agentState=creating 时由界面轮询状态。
+     *
+     * initialMessage（2026-11-24 用户需求）：绑定弹窗里用户填的开场文字。服务端转发给研究部，
+     * 研究部在 Agent 建好、默认技能确认安装后自动发给它（后台编排，不拖慢本接口）；
+     * 空白视为不填（不发送）。
      */
-    fun bindFolderYanjiubu(context: Context, folderId: String): YanjiubuBindResult {
+    fun bindFolderYanjiubu(context: Context, folderId: String, initialMessage: String? = null): YanjiubuBindResult {
+        val payload = JSONObject()
+        val msg = initialMessage?.trim().orEmpty()
+        if (msg.isNotEmpty()) payload.put("initial_message", msg)
         val conn = (URL("$BASE_URL/folders/$folderId/yanjiubu/bind").openConnection() as HttpURLConnection).apply {
             requestMethod = "POST"
             connectTimeout = 15000
@@ -590,7 +602,7 @@ object AsrClient {
             setRequestProperty("X-LZ-Token", token(context))
             setRequestProperty("Content-Type", "application/json")
         }
-        conn.outputStream.use { it.write("{}".toByteArray(Charsets.UTF_8)) }
+        conn.outputStream.use { it.write(payload.toString().toByteArray(Charsets.UTF_8)) }
         val code = conn.responseCode
         val body = readBody(conn, code)
         checkCodeReadable(code, body)
@@ -602,7 +614,8 @@ object AsrClient {
             alreadyBound = j.optBoolean("already_bound", false),
             folderName = folder?.let { optStringOrNull(it, "name") },
             agentState = agent?.let { optStringOrNull(it, "state") },
-            agentName = agent?.optJSONObject("agent")?.let { optStringOrNull(it, "name") }
+            agentName = agent?.optJSONObject("agent")?.let { optStringOrNull(it, "name") },
+            initialMessageScheduled = j.optJSONObject("initial_message")?.optBoolean("scheduled", false) ?: false
         )
     }
 
