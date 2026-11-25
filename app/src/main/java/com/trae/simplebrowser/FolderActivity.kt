@@ -23,6 +23,7 @@ import android.webkit.WebView
 import android.webkit.WebViewClient
 import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
+import com.trae.simplebrowser.core.KickoffHistory
 import com.trae.simplebrowser.core.YjKickoffText
 import com.trae.simplebrowser.databinding.ActivityFolderBinding
 import java.io.File
@@ -327,6 +328,7 @@ class FolderActivity : AppCompatActivity() {
     private fun confirmBindYanjiubu() {
         val d = detail ?: return
         val px = { v: Int -> dp(v) }
+        val pal = palette()
         val container = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setPadding(px(20), px(10), px(20), 0)
@@ -334,13 +336,19 @@ class FolderActivity : AppCompatActivity() {
         container.addView(TextView(this).apply {
             text = getString(R.string.yj_confirm_msg, d.name)
             textSize = 13.5f
-            setTextColor(0xFF444444.toInt())
+            setTextColor(pal.sub)
         })
-        container.addView(TextView(this).apply {
+        // 标签行：左「开场文字（可不填）」 + 右「历史版本 N ›」（存过才显示）
+        val labelRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = android.view.Gravity.CENTER_VERTICAL
+            setPadding(0, px(14), 0, px(4))
+        }
+        labelRow.addView(TextView(this).apply {
             text = getString(R.string.yj_initial_title)
             textSize = 14f
-            setTextColor(0xFF1A1A1A.toInt())
-            setPadding(0, px(14), 0, px(4))
+            setTextColor(pal.text)
+            layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
         })
         val input = EditText(this).apply {
             hint = getString(R.string.yj_initial_hint)
@@ -348,32 +356,53 @@ class FolderActivity : AppCompatActivity() {
             gravity = android.view.Gravity.TOP or android.view.Gravity.START
             minLines = 3
             maxLines = 6
-            setTextColor(0xFF1A1A1A.toInt())
-            setHintTextColor(0xFF9AA0A6.toInt())
+            setTextColor(pal.text)
+            setHintTextColor(pal.sub)
             inputType = android.text.InputType.TYPE_CLASS_TEXT or
                 android.text.InputType.TYPE_TEXT_FLAG_MULTI_LINE or
                 android.text.InputType.TYPE_TEXT_FLAG_CAP_SENTENCES
         }
+        // 历史版本入口（放 input 之后建：点击时要把选中的文案回填到 input）
+        val pill = TextView(this).apply {
+            textSize = 12.5f
+            setTextColor(pal.accent)
+            setPadding(px(10), px(4), px(10), px(4))
+            background = rounded(pal.accentSoft, 999, pal.accentStroke, 1)
+            visibility = View.GONE
+            setOnClickListener { showKickoffHistory(input) }
+        }
+        labelRow.addView(pill)
+        container.addView(labelRow)
         container.addView(input)
+        fun refreshPill() {
+            val n = KickoffHistoryStore.load(this).size
+            if (n > 0) {
+                pill.text = getString(R.string.yj_history_pill, n)
+                pill.visibility = View.VISIBLE
+            } else {
+                pill.visibility = View.GONE
+            }
+        }
+        refreshPill()
 
         // ---------- 报告交付约定（可留默认；不勾「上传」时后两项自动失效） ----------
         container.addView(TextView(this).apply {
             text = getString(R.string.yj_report_section)
             textSize = 13f
-            setTextColor(0xFF1A1A1A.toInt())
+            setTextColor(pal.text)
             setPadding(0, px(14), 0, px(2))
         })
         val cbUpload = CheckBox(this).apply {
             text = getString(R.string.yj_report_upload)
             textSize = 13.5f
             isChecked = true
-            setTextColor(0xFF333333.toInt())
+            setTextColor(pal.text)
         }
         val cbEvidence = CheckBox(this).apply {
             text = getString(R.string.yj_report_evidence)
             textSize = 13.5f
             isChecked = true
-            setTextColor(0xFF333333.toInt())
+            setTextColor(pal.text)
         }
         val ownersRow = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
@@ -382,19 +411,19 @@ class FolderActivity : AppCompatActivity() {
         ownersRow.addView(TextView(this).apply {
             text = getString(R.string.yj_report_owners)
             textSize = 13.5f
-            setTextColor(0xFF333333.toInt())
+            setTextColor(pal.text)
         })
         val cbOwnerA = CheckBox(this).apply {
             text = YjKickoffText.DEFAULT_OWNER_A
             textSize = 13.5f
             isChecked = true
-            setTextColor(0xFF333333.toInt())
+            setTextColor(pal.text)
         }
         val cbOwnerB = CheckBox(this).apply {
             text = YjKickoffText.DEFAULT_OWNER_B
             textSize = 13.5f
             isChecked = true
-            setTextColor(0xFF333333.toInt())
+            setTextColor(pal.text)
         }
         ownersRow.addView(cbOwnerA)
         ownersRow.addView(cbOwnerB)
@@ -402,8 +431,8 @@ class FolderActivity : AppCompatActivity() {
             hint = getString(R.string.yj_report_owner_extra_hint)
             textSize = 13.5f
             setSingleLine(true)
-            setTextColor(0xFF1A1A1A.toInt())
-            setHintTextColor(0xFF9AA0A6.toInt())
+            setTextColor(pal.text)
+            setHintTextColor(pal.sub)
             inputType = android.text.InputType.TYPE_CLASS_TEXT
         }
         container.addView(cbUpload)
@@ -413,7 +442,7 @@ class FolderActivity : AppCompatActivity() {
 
         val counter = TextView(this).apply {
             textSize = 12f
-            setTextColor(0xFF9AA0A6.toInt())
+            setTextColor(pal.sub)
             setPadding(0, px(6), 0, 0)
         }
         // 计数口径 = 最终要发出去的总字数（自由文字 + 约定段），避免「看着没超、实际超了」
@@ -432,14 +461,14 @@ class FolderActivity : AppCompatActivity() {
                 if (total >= 0) total else free,
                 AsrClient.YJ_INITIAL_MESSAGE_MAX_CHARS)
             counter.setTextColor(
-                if (total < 0) 0xFFD93025.toInt() else 0xFF9AA0A6.toInt())
+                if (total < 0) 0xFFD93025.toInt() else pal.sub)
         }
         renderCounter()
         container.addView(counter)
         container.addView(TextView(this).apply {
             text = getString(R.string.yj_initial_note)
             textSize = 12f
-            setTextColor(0xFF666666.toInt())
+            setTextColor(pal.sub)
             setPadding(0, px(8), 0, 0)
         })
         input.addTextChangedListener(object : android.text.TextWatcher {
@@ -492,11 +521,309 @@ class FolderActivity : AppCompatActivity() {
                         R.string.yj_kickoff_too_long, len, AsrClient.YJ_INITIAL_MESSAGE_MAX_CHARS))
                     return@setOnClickListener
                 }
+                // 点「开始绑定」时把这版文案存到本机（空文案不存）——下次可在「历史版本」里选用
+                val req = requirement()
+                KickoffHistoryStore.upsert(
+                    this, input.text.toString(), System.currentTimeMillis(),
+                    req.upload, req.evidenceBacked, req.owners)
+                refreshPill()
                 dialog.dismiss()
                 startYanjiubuBind(d.folderId, composed)
             }
         }
         dialog.show()
+    }
+
+    // ---------- 开场文案历史版本（存本机 + 关键词搜索选用，2026-11-25）
+
+    /** 跟随系统深/浅色的一小组颜色（弹窗与历史面板共用） */
+    private class Palette(
+        val sheet: Int, val card: Int, val stroke: Int,
+        val text: Int, val sub: Int,
+        val accent: Int, val accentSoft: Int, val accentStroke: Int
+    )
+
+    private fun isNightMode(): Boolean =
+        (resources.configuration.uiMode and android.content.res.Configuration.UI_MODE_NIGHT_MASK) ==
+            android.content.res.Configuration.UI_MODE_NIGHT_YES
+
+    private fun themeColor(attr: Int, fallback: Int): Int {
+        val tv = android.util.TypedValue()
+        if (!theme.resolveAttribute(attr, tv, true)) return fallback
+        return when {
+            tv.resourceId != 0 -> androidx.core.content.ContextCompat.getColor(this, tv.resourceId)
+            tv.type >= android.util.TypedValue.TYPE_FIRST_COLOR_INT -> tv.data
+            else -> fallback
+        }
+    }
+
+    private fun palette(): Palette {
+        val night = isNightMode()
+        val accent = themeColor(androidx.appcompat.R.attr.colorPrimary, 0xFF6200EE.toInt())
+        return Palette(
+            sheet = if (night) 0xFF1E1E22.toInt() else 0xFFFFFFFF.toInt(),
+            card = if (night) 0xFF26262B.toInt() else 0xFFF5F5F7.toInt(),
+            stroke = if (night) 0xFF34343A.toInt() else 0xFFE3E3E8.toInt(),
+            text = if (night) 0xFFECECF1.toInt() else 0xFF1A1A1C.toInt(),
+            sub = if (night) 0xFF8A8A92.toInt() else 0xFF6B6B72.toInt(),
+            accent = accent,
+            accentSoft = (accent and 0x00FFFFFF) or 0x1F000000,
+            accentStroke = (accent and 0x00FFFFFF) or 0x4D000000
+        )
+    }
+
+    private fun rounded(bg: Int, radiusDp: Int, stroke: Int? = null, strokeDp: Int = 1) =
+        android.graphics.drawable.GradientDrawable().apply {
+            setColor(bg)
+            cornerRadius = dp(radiusDp).toFloat()
+            if (stroke != null) setStroke(dp(strokeDp), stroke)
+        }
+
+    /** 时间标签：今天显示「今天 HH:mm」，其余「MM-dd HH:mm」 */
+    private fun historyTimeLabel(ts: Long): String {
+        val cal = java.util.Calendar.getInstance()
+        val now = java.util.Calendar.getInstance()
+        cal.timeInMillis = ts
+        val sameDay = cal.get(java.util.Calendar.YEAR) == now.get(java.util.Calendar.YEAR) &&
+            cal.get(java.util.Calendar.DAY_OF_YEAR) == now.get(java.util.Calendar.DAY_OF_YEAR)
+        val fmt = java.text.SimpleDateFormat(if (sameDay) "HH:mm" else "MM-dd HH:mm", java.util.Locale.CHINA)
+        val body = fmt.format(java.util.Date(ts))
+        return if (sameDay) getString(R.string.yj_history_today, body) else body
+    }
+
+    /**
+     * 历史版本抽屉：搜关键词筛选 + 点「使用」回填 + 单条删除。
+     * **没输入关键词时列出全部历史**（用户 2026-11-25 明确要求）；输入后按正文多关键词 AND 过滤。
+     * 只回填文字，报告交付约定保持弹窗里当前勾选（用户拍板）。
+     */
+    private fun showKickoffHistory(input: EditText) {
+        val pal = palette()
+        val loaded = KickoffHistoryStore.load(this)
+        if (loaded.isEmpty()) {
+            toast(getString(R.string.yj_history_empty))
+            return
+        }
+        // 可变副本：删除/使用时原地更新，抽屉列表随之重绘
+        val all = ArrayList(loaded)
+        val px = { v: Int -> dp(v) }
+        val sheet = com.google.android.material.bottomsheet.BottomSheetDialog(this)
+        val root = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(px(16), px(10), px(16), px(14))
+            background = rounded(pal.sheet, 26)
+        }
+        // 抽屉把手
+        root.addView(View(this).apply {
+            background = rounded(pal.stroke, 2)
+            layoutParams = LinearLayout.LayoutParams(px(38), px(4)).apply {
+                gravity = android.view.Gravity.CENTER_HORIZONTAL
+                topMargin = px(2)
+                bottomMargin = px(12)
+            }
+        })
+        val headRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        headRow.addView(TextView(this).apply {
+            text = getString(R.string.yj_history_title)
+            textSize = 17f
+            setTextColor(pal.text)
+            setTypeface(typeface, android.graphics.Typeface.BOLD)
+            layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+        })
+        val countLabel = TextView(this).apply {
+            text = getString(R.string.yj_history_count, all.size)
+            textSize = 12f
+            setTextColor(pal.sub)
+        }
+        headRow.addView(countLabel)
+        root.addView(headRow)
+
+        val search = EditText(this).apply {
+            hint = getString(R.string.yj_history_search_hint)
+            textSize = 13.5f
+            setSingleLine(true)
+            setTextColor(pal.text)
+            setHintTextColor(pal.sub)
+            setPadding(px(12), px(10), px(12), px(10))
+            background = rounded(pal.card, 12, pal.stroke, 1)
+            inputType = android.text.InputType.TYPE_CLASS_TEXT
+        }
+        root.addView(search, LinearLayout.LayoutParams(
+            LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply {
+            topMargin = px(12)
+        })
+        val hintLine = TextView(this).apply {
+            textSize = 11.5f
+            setTextColor(pal.sub)
+            setPadding(px(2), px(8), 0, 0)
+        }
+        root.addView(hintLine)
+
+        val listBox = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        val scroller = android.widget.ScrollView(this).apply {
+            addView(listBox)
+            isFillViewport = false
+        }
+        // 列表高度自适配（抽屉根布局是 wrap_content，不能用 weight=1，否则高度会塌成 0）
+        val listH = minOf(dp(340), resources.displayMetrics.heightPixels - dp(320))
+            .coerceAtLeast(dp(180))
+        root.addView(scroller, LinearLayout.LayoutParams(
+            LinearLayout.LayoutParams.MATCH_PARENT, listH).apply { topMargin = px(4) })
+
+        // render / reload 互相调用：先占位再赋值
+        var render: () -> Unit = {}
+        fun reload() {
+            val fresh = KickoffHistoryStore.load(this)
+            all.clear()
+            all.addAll(fresh)
+            countLabel.text = getString(R.string.yj_history_count, fresh.size)
+            if (fresh.isEmpty()) {
+                sheet.dismiss()
+                return
+            }
+            render()
+        }
+        render = {
+            val q = search.text.toString()
+            val items = KickoffHistory.filter(all, q)
+            hintLine.text = if (q.isBlank()) {
+                getString(R.string.yj_history_hint_all, all.size)
+            } else {
+                getString(R.string.yj_history_hint_filtered, items.size)
+            }
+            listBox.removeAllViews()
+            if (items.isEmpty()) {
+                listBox.addView(TextView(this).apply {
+                    text = getString(R.string.yj_history_no_match, q.trim())
+                    textSize = 12.5f
+                    setTextColor(pal.sub)
+                    gravity = android.view.Gravity.CENTER
+                    setPadding(0, px(28), 0, px(28))
+                })
+            } else {
+                for (v in items) {
+                    listBox.addView(historyRow(v, pal, px, onUse = { picked ->
+                        KickoffHistoryStore.markUsed(this, picked.id, System.currentTimeMillis())
+                        input.setText(picked.text)
+                        input.setSelection(input.text.length)
+                        sheet.dismiss()
+                        toast(getString(R.string.yj_history_used))
+                    }, onDelete = { reload() }))
+                }
+            }
+        }
+
+        search.addTextChangedListener(object : android.text.TextWatcher {
+            override fun beforeTextChanged(s: CharSequence?, a: Int, b: Int, c: Int) {}
+            override fun onTextChanged(s: CharSequence?, a: Int, b: Int, c: Int) {}
+            override fun afterTextChanged(s: android.text.Editable?) = render()
+        })
+
+        root.addView(TextView(this).apply {
+            text = getString(R.string.yj_history_footer, KickoffHistory.MAX_VERSIONS)
+            textSize = 11.5f
+            setTextColor(pal.sub)
+            setPadding(0, px(10), 0, 0)
+            setLineSpacing(px(3).toFloat(), 1f)
+        })
+
+        sheet.setContentView(root)
+        // 抽屉自身背景置透明，露出上面的圆角卡片
+        (sheet.findViewById<View>(com.google.android.material.R.id.design_bottom_sheet))?.setBackgroundColor(
+            android.graphics.Color.TRANSPARENT)
+        sheet.show()
+        render()
+    }
+
+    /** 单条历史卡片：摘要两行 + 时间/字数/形态/所有人 + 使用 + 删除 */
+    private fun historyRow(
+        v: com.trae.simplebrowser.core.KickoffVersion,
+        pal: Palette,
+        px: (Int) -> Int,
+        onUse: (com.trae.simplebrowser.core.KickoffVersion) -> Unit,
+        onDelete: () -> Unit
+    ): View {
+        val card = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(px(12), px(10), px(12), px(10))
+            background = rounded(pal.card, 14, pal.stroke, 1)
+            layoutParams = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT)
+                .apply { bottomMargin = px(9) }
+        }
+        card.addView(TextView(this).apply {
+            text = com.trae.simplebrowser.core.KickoffHistory.summary(v.text)
+            textSize = 13f
+            setTextColor(pal.text)
+            maxLines = 2
+            ellipsize = android.text.TextUtils.TruncateAt.END
+            setLineSpacing(px(2).toFloat(), 1f)
+        })
+        // 元信息：时间 · 字数 · 形态 · 所有人（保存当时的快照，仅供参考）
+        val meta = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = android.view.Gravity.CENTER_VERTICAL
+        }
+        fun tagView(t: String): TextView = TextView(this).apply {
+            text = t
+            textSize = 11f
+            setTextColor(pal.sub)
+            setPadding(px(5), px(1), px(5), px(1))
+            background = rounded(android.graphics.Color.TRANSPARENT, 6, pal.stroke, 1)
+            setMarginsCompat(px(7), 0, 0, 0)
+        }
+        meta.addView(TextView(this).apply {
+            text = historyTimeLabel(v.savedAt) + " · " +
+                getString(R.string.yj_history_chars,
+                    com.trae.simplebrowser.core.KickoffHistory.charCount(v.text))
+            textSize = 11.5f
+            setTextColor(pal.sub)
+        })
+        if (v.upload) {
+            meta.addView(tagView(if (v.evidenceBacked) getString(R.string.yj_history_tag_evidence)
+            else getString(R.string.yj_history_tag_plain)))
+            if (v.owners.isNotEmpty()) meta.addView(tagView(v.owners.joinToString("、")))
+        } else {
+            meta.addView(tagView(getString(R.string.yj_history_tag_noupload)))
+        }
+        card.addView(meta, LinearLayout.LayoutParams(
+            LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT)
+            .apply { topMargin = px(7) })
+
+        val foot = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = android.view.Gravity.CENTER_VERTICAL
+        }
+        foot.addView(TextView(this).apply {
+            text = getString(R.string.yj_history_use)
+            textSize = 12.5f
+            setTextColor(pal.accent)
+            setTypeface(typeface, android.graphics.Typeface.BOLD)
+            setPadding(px(12), px(5), px(12), px(5))
+            background = rounded(pal.accentSoft, 9, pal.accentStroke, 1)
+            setOnClickListener { onUse(v) }
+        })
+        foot.addView(View(this), LinearLayout.LayoutParams(0, 0, 1f))
+        foot.addView(TextView(this).apply {
+            text = getString(R.string.yj_history_delete)
+            textSize = 12f
+            setTextColor(pal.sub)
+            setPadding(px(10), px(5), px(6), px(5))
+            setOnClickListener {
+                KickoffHistoryStore.remove(this@FolderActivity, v.id)
+                toast(getString(R.string.yj_history_deleted))
+                onDelete()
+            }
+        })
+        card.addView(foot, LinearLayout.LayoutParams(
+            LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT)
+            .apply { topMargin = px(8) })
+        return card
+    }
+
+    private fun View.setMarginsCompat(l: Int, t: Int, r: Int, b: Int) {
+        val lp = layoutParams as? LinearLayout.LayoutParams ?: return
+        lp.setMargins(l, t, r, b)
+        layoutParams = lp
     }
 
     private fun startYanjiubuBind(folderId: String, initialMessage: String? = null) {

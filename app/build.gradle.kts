@@ -1,4 +1,4 @@
-plugins {
+﻿plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
 }
@@ -11,16 +11,14 @@ android {
         applicationId = "com.trae.lightboat"
         minSdk = 24
         targetSdk = 34
-        versionCode = 72
-        versionName = "1.24.0"
+        versionCode = 73
+        versionName = "1.25.0"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 
     signingConfigs {
-        // 侧载分发：release 与 debug 同用 debug 密钥——签名一致才能 install -r 覆盖安装不丢数据，
-        // 且 release 非 debuggable，系统不再弹「Android 应用兼容性」开发者警告
-        getByName("debug")
+        // 渚ц浇鍒嗗彂锛歳elease 涓?debug 鍚岀敤 debug 瀵嗛挜鈥斺€旂鍚嶄竴鑷存墠鑳?install -r 瑕嗙洊瀹夎涓嶄涪鏁版嵁锛?        // 涓?release 闈?debuggable锛岀郴缁熶笉鍐嶅脊銆孉ndroid 搴旂敤鍏煎鎬с€嶅紑鍙戣€呰鍛?        getByName("debug")
     }
 
     buildTypes {
@@ -35,8 +33,7 @@ android {
     }
 
     packaging {
-        // AGP 8.2 打包未压缩 .so 只按 4KB 对齐；改为压缩打包（安装时解压落盘），
-        // 绕开 zip 层 16KB 对齐要求；ELF 本体的 16KB 对齐由 CameraX 1.4.2 的库保证
+        // AGP 8.2 鎵撳寘鏈帇缂?.so 鍙寜 4KB 瀵归綈锛涙敼涓哄帇缂╂墦鍖咃紙瀹夎鏃惰В鍘嬭惤鐩橈級锛?        // 缁曞紑 zip 灞?16KB 瀵归綈瑕佹眰锛汦LF 鏈綋鐨?16KB 瀵归綈鐢?CameraX 1.4.2 鐨勫簱淇濊瘉
         jniLibs {
             useLegacyPackaging = true
         }
@@ -57,14 +54,14 @@ android {
 
 dependencies {
     implementation("androidx.core:core-ktx:1.13.1")
-    // 多身份（multi-profile）WebView：ProfileStore 每身份独立 cookie/localStorage/缓存
+    // 澶氳韩浠斤紙multi-profile锛塛ebView锛歅rofileStore 姣忚韩浠界嫭绔?cookie/localStorage/缂撳瓨
     implementation("androidx.webkit:webkit:1.12.1")
     implementation("androidx.appcompat:appcompat:1.7.0")
     implementation("com.google.android.material:material:1.12.0")
     implementation("androidx.constraintlayout:constraintlayout:2.1.4")
     implementation("androidx.exifinterface:exifinterface:1.3.7")
-    // 扫码：ZXing 纯 Java 解码内核（无 Play Services 依赖，兼容华为设备）+ CameraX 取景
-    // CameraX ≥1.4 原生库 libimage_processing_util_jni.so 才按 16KB 页对齐（1.3.4 会被系统弹兼容性警告）
+    // 鎵爜锛歓Xing 绾?Java 瑙ｇ爜鍐呮牳锛堟棤 Play Services 渚濊禆锛屽吋瀹瑰崕涓鸿澶囷級+ CameraX 鍙栨櫙
+    // CameraX 鈮?.4 鍘熺敓搴?libimage_processing_util_jni.so 鎵嶆寜 16KB 椤靛榻愶紙1.3.4 浼氳绯荤粺寮瑰吋瀹规€ц鍛婏級
     implementation("com.google.zxing:core:3.5.3")
     implementation("androidx.camera:camera-core:1.4.2")
     implementation("androidx.camera:camera-camera2:1.4.2")

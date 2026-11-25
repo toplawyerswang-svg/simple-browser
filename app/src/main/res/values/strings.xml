@@ -510,6 +510,25 @@
     <string name="yj_report_owners">报告所有人</string>
     <string name="yj_report_owner_extra_hint">其他人（可选，用顿号分隔）</string>
     <string name="yj_kickoff_too_long">开场文字＋报告约定合计 %1$d 字，超过 %2$d 字上限，请精简</string>
+    <!-- 开场文案历史版本（2026-11-25 用户需求）：存本机、可关键词搜索选用；未输入关键词时展示全量 -->
+    <string name="yj_history_pill">历史版本 %1$d ›</string>
+    <string name="yj_history_title">历史版本</string>
+    <string name="yj_history_count">共 %1$d 条 · 存在本机</string>
+    <string name="yj_history_search_hint">🔍 搜索文案关键词（如：合同、上诉、退赔）</string>
+    <string name="yj_history_hint_all">全部 %1$d 条 · 输入关键词可筛选</string>
+    <string name="yj_history_hint_filtered">搜到 %1$d 条 · 按文案正文匹配，不区分大小写</string>
+    <string name="yj_history_empty">还没有保存过开场文案。点「开始绑定」时会自动把这版文案存到本机。</string>
+    <string name="yj_history_no_match">没有匹配「%1$s」的历史文案</string>
+    <string name="yj_history_use">使用</string>
+    <string name="yj_history_used">已填入该版本</string>
+    <string name="yj_history_deleted">已删除该版本</string>
+    <string name="yj_history_footer">点「使用」把文案填回输入框（报告约定保持你当前勾选）。\n点「开始绑定」时自动存为新版本；同一段文字不重复保存，最多留 %1$d 条。</string>
+    <string name="yj_history_chars">%1$d 字</string>
+    <string name="yj_history_tag_evidence">附信源</string>
+    <string name="yj_history_tag_plain">普通报告</string>
+    <string name="yj_history_tag_noupload">不上传</string>
+    <string name="yj_history_today">今天 %1$s</string>
+    <string name="yj_history_delete">删除</string>
     <string name="yj_initial_counter">%1$d/%2$d</string>
     <string name="yj_initial_too_long">开场文字不能超过 %1$d 字（当前 %2$d 字）</string>
     <string name="yj_kickoff_scheduled">\n\n你要转给专属 Agent 的说明（%1$d 字，含报告交付约定）会在 Agent 建好、技能确认安装后自动发给它。</string>
