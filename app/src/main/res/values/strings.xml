@@ -503,9 +503,16 @@
     <string name="yj_initial_title">开场文字（可不填）</string>
     <string name="yj_initial_hint">给这个文件夹的专属 Agent 留一句话，比如让它先做什么</string>
     <string name="yj_initial_note">专属 Agent 建好、默认技能确认安装完成后，这段文字会自动发给它；结果可在研究部消息中心与「给专属Agent发消息」历史里查。</string>
+    <!-- 报告交付约定（2026-11-25 用户需求）：三项选择并入开场文字，一起发给 Agent，研究部零改动 -->
+    <string name="yj_report_section">报告交付约定（会并入上面的文字一起发给 Agent）</string>
+    <string name="yj_report_upload">报告上传到研究部</string>
+    <string name="yj_report_evidence">按「附信源报告」形态上传（带注释与证据截图，平台会校验引用闭合）</string>
+    <string name="yj_report_owners">报告所有人</string>
+    <string name="yj_report_owner_extra_hint">其他人（可选，用顿号分隔）</string>
+    <string name="yj_kickoff_too_long">开场文字＋报告约定合计 %1$d 字，超过 %2$d 字上限，请精简</string>
     <string name="yj_initial_counter">%1$d/%2$d</string>
     <string name="yj_initial_too_long">开场文字不能超过 %1$d 字（当前 %2$d 字）</string>
-    <string name="yj_kickoff_scheduled">\n\n你填写的开场文字（%1$d 字）会在专属 Agent 建好、技能确认安装后自动发给它。</string>
+    <string name="yj_kickoff_scheduled">\n\n你要转给专属 Agent 的说明（%1$d 字，含报告交付约定）会在 Agent 建好、技能确认安装后自动发给它。</string>
     <string name="yj_kickoff_unconfirmed">\n\n注意：服务端没有确认收到开场文字（可能是服务端版本较旧），若 Agent 迟迟没收到，请在研究部网页端「给专属Agent发消息」手动发送。</string>
     <string name="yj_binding_step">正在创建研究部文件夹并绑定…</string>
     <string name="yj_agent_creating">已绑定，专属 Agent 创建中…（后台完成会通知研究部消息中心）</string>

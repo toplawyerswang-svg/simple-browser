@@ -23,6 +23,7 @@ import android.webkit.WebView
 import android.webkit.WebViewClient
 import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
+import com.trae.simplebrowser.core.YjKickoffText
 import com.trae.simplebrowser.databinding.ActivityFolderBinding
 import java.io.File
 import java.util.Locale
@@ -319,9 +320,9 @@ class FolderActivity : AppCompatActivity() {
     }
 
     /**
-     * 绑定确认弹窗（2026-11-24 增补开场文字输入框）：
-     * 上半是原有说明，下半是一个多行输入框——用户可给这个文件夹的专属 Agent 留一句话，
-     * 研究部会在 Agent 建好、默认技能确认安装后自动发过去（可留空）。
+     * 绑定确认弹窗：说明 + 开场文字输入框 + 报告交付约定（2026-11-24 增补输入框；2026-11-25 增补三项约定）。
+     * 用户在输入框下方勾的选择（是否上传报告 / 是否附信源形态 / 报告所有人）最终并入开场文字，
+     * 一起发给文件夹专属 Agent——研究部平台零改动，Agent 用已装的递交技能按这段要求执行。
      */
     private fun confirmBindYanjiubu() {
         val d = detail ?: return
@@ -354,18 +355,84 @@ class FolderActivity : AppCompatActivity() {
                 android.text.InputType.TYPE_TEXT_FLAG_CAP_SENTENCES
         }
         container.addView(input)
+
+        // ---------- 报告交付约定（可留默认；不勾「上传」时后两项自动失效） ----------
+        container.addView(TextView(this).apply {
+            text = getString(R.string.yj_report_section)
+            textSize = 13f
+            setTextColor(0xFF1A1A1A.toInt())
+            setPadding(0, px(14), 0, px(2))
+        })
+        val cbUpload = CheckBox(this).apply {
+            text = getString(R.string.yj_report_upload)
+            textSize = 13.5f
+            isChecked = true
+            setTextColor(0xFF333333.toInt())
+        }
+        val cbEvidence = CheckBox(this).apply {
+            text = getString(R.string.yj_report_evidence)
+            textSize = 13.5f
+            isChecked = true
+            setTextColor(0xFF333333.toInt())
+        }
+        val ownersRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = android.view.Gravity.CENTER_VERTICAL
+        }
+        ownersRow.addView(TextView(this).apply {
+            text = getString(R.string.yj_report_owners)
+            textSize = 13.5f
+            setTextColor(0xFF333333.toInt())
+        })
+        val cbOwnerA = CheckBox(this).apply {
+            text = YjKickoffText.DEFAULT_OWNER_A
+            textSize = 13.5f
+            isChecked = true
+            setTextColor(0xFF333333.toInt())
+        }
+        val cbOwnerB = CheckBox(this).apply {
+            text = YjKickoffText.DEFAULT_OWNER_B
+            textSize = 13.5f
+            isChecked = true
+            setTextColor(0xFF333333.toInt())
+        }
+        ownersRow.addView(cbOwnerA)
+        ownersRow.addView(cbOwnerB)
+        val extraOwner = EditText(this).apply {
+            hint = getString(R.string.yj_report_owner_extra_hint)
+            textSize = 13.5f
+            setSingleLine(true)
+            setTextColor(0xFF1A1A1A.toInt())
+            setHintTextColor(0xFF9AA0A6.toInt())
+            inputType = android.text.InputType.TYPE_CLASS_TEXT
+        }
+        container.addView(cbUpload)
+        container.addView(cbEvidence)
+        container.addView(ownersRow)
+        container.addView(extraOwner)
+
         val counter = TextView(this).apply {
             textSize = 12f
             setTextColor(0xFF9AA0A6.toInt())
-            setPadding(0, px(4), 0, 0)
+            setPadding(0, px(6), 0, 0)
         }
+        // 计数口径 = 最终要发出去的总字数（自由文字 + 约定段），避免「看着没超、实际超了」
+        fun requirement(): YjKickoffText.ReportRequirement = YjKickoffText.ReportRequirement(
+            upload = cbUpload.isChecked,
+            evidenceBacked = cbEvidence.isChecked,
+            owners = YjKickoffText.mergeOwners(
+                cbOwnerA.isChecked, cbOwnerB.isChecked, extraOwner.text)
+        )
+        fun composedText(): String? = YjKickoffText.compose(input.text.toString(), requirement())
         fun renderCounter() {
-            val n = input.text.toString().trim().length
+            val free = input.text.toString().trim().length
+            val total = composedText()?.length ?: -1
             counter.text = getString(
-                R.string.yj_initial_counter, n, AsrClient.YJ_INITIAL_MESSAGE_MAX_CHARS)
+                R.string.yj_initial_counter,
+                if (total >= 0) total else free,
+                AsrClient.YJ_INITIAL_MESSAGE_MAX_CHARS)
             counter.setTextColor(
-                if (n > AsrClient.YJ_INITIAL_MESSAGE_MAX_CHARS) 0xFFD93025.toInt()
-                else 0xFF9AA0A6.toInt())
+                if (total < 0) 0xFFD93025.toInt() else 0xFF9AA0A6.toInt())
         }
         renderCounter()
         container.addView(counter)
@@ -380,6 +447,30 @@ class FolderActivity : AppCompatActivity() {
             override fun onTextChanged(s: CharSequence?, a: Int, b: Int, c: Int) {}
             override fun afterTextChanged(s: android.text.Editable?) = renderCounter()
         })
+        extraOwner.addTextChangedListener(object : android.text.TextWatcher {
+            override fun beforeTextChanged(s: CharSequence?, a: Int, b: Int, c: Int) {}
+            override fun onTextChanged(s: CharSequence?, a: Int, b: Int, c: Int) {}
+            override fun afterTextChanged(s: android.text.Editable?) = renderCounter()
+        })
+        // 不上传报告时，形态与所有人没有意义：置灰并取消勾选，避免发出自相矛盾的约定
+        fun syncUploadDependents() {
+            val on = cbUpload.isChecked
+            for (v: View in listOf(cbEvidence, ownersRow, extraOwner)) {
+                v.isEnabled = on
+                v.alpha = if (on) 1f else 0.45f
+            }
+            if (!on) {
+                cbEvidence.isChecked = false
+                cbOwnerA.isChecked = false
+                cbOwnerB.isChecked = false
+            }
+            renderCounter()
+        }
+        cbUpload.setOnCheckedChangeListener { _, _ -> syncUploadDependents() }
+        for (cb in listOf(cbEvidence, cbOwnerA, cbOwnerB)) {
+            cb.setOnCheckedChangeListener { _, _ -> renderCounter() }
+        }
+
         val dialog = AlertDialog.Builder(this)
             .setTitle(R.string.yj_confirm_title)
             .setView(android.widget.ScrollView(this).apply {
@@ -393,14 +484,16 @@ class FolderActivity : AppCompatActivity() {
         // 超长不静默截断、也不直接关窗：提示后留在输入框里让用户自己删
         dialog.setOnShowListener {
             dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener {
-                val text = input.text.toString().trim()
-                if (text.length > AsrClient.YJ_INITIAL_MESSAGE_MAX_CHARS) {
+                val composed = composedText()
+                if (composed == null) {
+                    val free = input.text.toString().trim().length
+                    val len = free + YjKickoffText.composeRequirement(requirement()).length + 2
                     toast(getString(
-                        R.string.yj_initial_too_long, AsrClient.YJ_INITIAL_MESSAGE_MAX_CHARS, text.length))
+                        R.string.yj_kickoff_too_long, len, AsrClient.YJ_INITIAL_MESSAGE_MAX_CHARS))
                     return@setOnClickListener
                 }
                 dialog.dismiss()
-                startYanjiubuBind(d.folderId, text.ifEmpty { null })
+                startYanjiubuBind(d.folderId, composed)
             }
         }
         dialog.show()
