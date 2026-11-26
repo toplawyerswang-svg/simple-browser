@@ -648,5 +648,5 @@
 | 纯逻辑 | 新增 `core/FolderPicker.kt`：`terms` 切词（`[\s\u3000]+`）、`filter`（空关键词原样返回、泛型按名称选择器过滤，保持原顺序）；零 Android 依赖，JVM 单测直跑 |
 | UI     | `FolderAddFlow.moveBatch` 由 `AlertDialog.setItems` 改为自绘 `showPicker`：标题 + 搜索框 +「＋ 新建文件夹」常驻行 + 可滚动文件夹列表（行高 50dp、16sp、水波纹、单行省略）；列表高度 = min(内容高度, 屏高−430dp 预留) 且键盘 `SOFT_INPUT_ADJUST_RESIZE`；文字色/次要色跟随主题，深色模式不隐形。**一处改动覆盖全部选夹入口**：设置页两个列表（长按/多选批量）、识别结果详情页、批量结果页、聊天分享页、夹内批量移动/复制 |
 | 单测/构建 | 新增 `FolderPickerTest` **11 例**（空/纯空白=全量且保序、中文子串、英文大小写、无匹配、查询去空白、多关键词 AND/单词不命中、全角空格分隔、对象过滤）；JUnitCore 直跑全量 **OK (229 tests)**（含 `SuggestEngineTest` 5 例——与 HistoryStoreTest 同文件，按文件名扫类名会漏）；`assembleRelease` **v1.26.0/74**（6297914 字节，sha256 `4dbd5507…`） |
-| 验证    | 编译过；单测 229 全绿；APK `aapt2 dump badging` = versionCode 74 / versionName 1.26.0 |
-| 未验证  | 真机 UI 未实测（adb 无设备在线，vivo 无线 192.168.1.69:5555 也连不上）：搜索框位置、键盘弹起后的列表高度、无匹配提示、深色模式配色；真实夹列表的点按搜索过滤未实测 |
+| 验证    | 编译过；单测 229 全绿；APK `aapt2 dump badging` = versionCode 74 / versionName 1.26.0；**已发布 soft.orientlaw.cn 条目 id=2**（2026-11-26 用户指示发布：文件 `bfb7079b-eac0-4682-b677-6fe374d8ac21.apk`，6297914 字节，sha256 `4dbd5507…`）；`/api/software/2/latest`=74/1.26.0，口令 12368 解锁→令牌下载 200、字节与 sha256 与本地一致；回滚 SQL `/root/shareware-rollback-20261126-v1.26.0.sql`，旧包 v1.25.0 `e0102107-….apk` 留盘 |
+| 未验证  | 真机 UI 未实测（adb 无设备在线，vivo 无线 192.168.1.69:5555 也连不上）：搜索框位置、键盘弹起后的列表高度、无匹配提示、深色模式配色；真实夹列表的点按搜索过滤未实测——**用户将从手机 APP「版本更新」升级后自查** |
