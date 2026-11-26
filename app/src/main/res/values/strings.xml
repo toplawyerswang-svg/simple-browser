@@ -432,6 +432,7 @@
     <string name="folder_add_action">移入文件夹</string>
     <string name="folder_add_to">移入文件夹（%1$s）</string>
     <string name="folder_new_and_add">＋ 新建文件夹</string>
+    <string name="folder_search_no_match">没有匹配的文件夹\n\n可用上方「＋ 新建文件夹」新建一个</string>
     <string name="folder_remove_title">移出文件夹</string>
     <string name="folder_remove_confirm">把「%1$s」移出该文件夹？\n记录本身不会被删除。</string>
     <string name="folder_removed">已移出文件夹</string>
