@@ -635,12 +635,13 @@ class MainActivity : AppCompatActivity() {
         val identity = resolveIdentityExtra(intent)
         val url = intent.dataString
         if (intent.hasExtra(EXTRA_IDENTITY)) {
-            // 桌面快捷方式（含身份快捷方式）：同身份+同域名的标签已开着就直接切回，
-            // 不重新加载——页面滚到哪、登录态全保留，瞬间显示；没有才新开标签加载
+            // 桌面快捷方式（含身份快捷方式）：同身份+同页面的标签已开着就直接切回，
+            // 不重新加载——页面滚到哪、登录态全保留，瞬间显示；没有才新开标签加载。
+            // 同一站点两个快捷方式（如 / 与 /my-batch-calendar）按完整页面区分，互不抢占。
             val profileName = ProfileManager.profileNameOf(identity)
             val reuseId = TabMatcher.findReusableTabId(tabManager.tabs, url, profileName, tabLastActiveAt)
             if (reuseId != null) {
-                Log.i(logTag, "onNewIntent -> shortcut reuse tab $reuseId (identity=$identity)")
+                Log.i(logTag, "onNewIntent -> shortcut reuse tab $reuseId (identity=$identity, url=$url)")
                 attachTabWebView(reuseId)
             } else if (identity > 1) {
                 // 身份快捷方式：新开该身份标签并加载目标网址

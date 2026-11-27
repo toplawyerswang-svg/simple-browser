@@ -650,3 +650,15 @@
 | 单测/构建 | 新增 `FolderPickerTest` **11 例**（空/纯空白=全量且保序、中文子串、英文大小写、无匹配、查询去空白、多关键词 AND/单词不命中、全角空格分隔、对象过滤）；JUnitCore 直跑全量 **OK (229 tests)**（含 `SuggestEngineTest` 5 例——与 HistoryStoreTest 同文件，按文件名扫类名会漏）；`assembleRelease` **v1.26.0/74**（6297914 字节，sha256 `4dbd5507…`） |
 | 验证    | 编译过；单测 229 全绿；APK `aapt2 dump badging` = versionCode 74 / versionName 1.26.0；**已发布 soft.orientlaw.cn 条目 id=2**（2026-11-26 用户指示发布：文件 `bfb7079b-eac0-4682-b677-6fe374d8ac21.apk`，6297914 字节，sha256 `4dbd5507…`）；`/api/software/2/latest`=74/1.26.0，口令 12368 解锁→令牌下载 200、字节与 sha256 与本地一致；回滚 SQL `/root/shareware-rollback-20261126-v1.26.0.sql`，旧包 v1.25.0 `e0102107-….apk` 留盘 |
 | 未验证  | 真机 UI 未实测（adb 无设备在线，vivo 无线 192.168.1.69:5555 也连不上）：搜索框位置、键盘弹起后的列表高度、无匹配提示、深色模式配色；真实夹列表的点按搜索过滤未实测——**用户将从手机 APP「版本更新」升级后自查** |
+
+### F-51 桌面快捷方式复用改为「同页面」匹配（同站多快捷方式互不抢占）
+
+| 项目    | 内容 |
+| ----- | ----- |
+| 需求    | 2026-11-27 用户报告：桌面有两个快捷方式——`https://yanjiubu.orientlaw.cn` 与 `https://yanjiubu.orientlaw.cn/my-batch-calendar`；先点第一个（站点根）再点第二个，页面不跳转、仍停在根页 |
+| 根因    | F-43 的复用匹配只比「同身份 + 同主机名」（`TabMatcher.urlHost`），不看路径；第二个快捷方式被判定为"这个站已开着"，直接 `attachTabWebView` 切回根页标签，目标 URL 从未加载。**本条收窄 F-43 的口径：同域名 → 同页面** |
+| 新口径  | ①复用键 = `scheme://host[:port]/path[?query]`（忽略 `#` 片段；主机小写、默认端口省略、末尾多余斜杠归一、查询串原样保留）；②同身份（Profile）+ 同页面才秒回（零加载、保留滚动位置与登录态）；③没有同页面标签就新开标签加载目标页，**不再按域名兜底**（避免同站两个快捷方式互相抢占）；④身份 1 / 多身份分支、外部链接（无 `extra_identity`）的 `loadUrl` 行为不变 |
+| 关联代码 | `core/TabMatcher.kt`（新增 `pageKey` + 私有 `splitUrl`，`findReusableTabId` 改按页面键匹配；`urlHost` 对外语义不变）；`MainActivity.onNewIntent` 快捷方式分支注释与日志同步 |
+| 单测/构建 | `TabMatcherTest` 16 例（新增 pageKey 归一化/默认端口/查询保留/非法输入拒绝；缺陷回归：根页与日历页各回各的、只有根页时日历快捷方式必须不复用、根快捷方式也不再借用站内其它页、同页复用、不同查询不复用、子域/协议互斥、LRU、跨身份、空 URL）；JUnitCore 直跑全量 **OK (236 tests)**；`assembleRelease` **v1.26.1/75**（6298930 字节，sha256 `fcc03dab…`），`aapt2 dump badging` = versionCode 75 / versionName 1.26.1 |
+| 真机验证 | **未做（设备未接入）**：2026-11-27 09:12 手机报警请用户插 USB，至 09:30 `adb devices` 仍为空；无线 adb 192.168.1.69 / .73 / .91:5555 均连接失败。手机接入后按下列整链跑：冷启动快捷方式 A（站点根）→ 运行中点 B（/my-batch-calendar，期望地址栏为日历、标签数 2）→ 再点 A（标签数仍 2、回根页）→ 再点 B（回日历）→ A/B 再各点一次复测；最后查 `adb logcat -b crash` 无本应用记录 |
+| 未验证 | ①真机 `am start` 模拟快捷方式的整链（`-a VIEW -d <url> --ei extra_identity 1 -n com.trae.lightboat/com.trae.simplebrowser.MainActivity`）；②桌面真实点按两个已钉快捷方式（桌面保存的 intent 参数与 `am start` 一致，待用户点一遍确认）。真机验证前不部署、不发布 |
